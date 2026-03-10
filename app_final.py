@@ -1,293 +1,3 @@
-#!/usr/bin/env python3
-
-import calendar
-import csv
-import json
-import os
-import re
-import shutil
-import sys
-import textwrap
-from collections import namedtuple
-from datetime import datetime, timedelta
-
-# --- Configuration ---
-# ... (rest of imports and config loading)
-CONFIG_FILE = os.path.expanduser("~/Timekeeping/config.json")
-
-try:
-    with open(CONFIG_FILE, "r") as f:
-        config = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError, KeyError):
-    print(f"Error: Could not load {CONFIG_FILE}. Please ensure it exists and is valid.")
-    sys.exit(1)
-
-START_DATE_OVERRIDE = config["start_date"]
-INITIAL_BALANCE_HOURS = config["initial_balance"]
-PROJECTS = config["projects"]
-DAILY_TARGET = timedelta(hours=config["daily_target_hours"])
-
-CSV_FILE = os.path.expanduser("~/Timekeeping/timesheet.csv")
-SESSION_FILE = os.path.expanduser("~/Timekeeping/.active_in")
-
-# --- Data Models ---
-# date, project, start_time, end_time, brutto, netto, comment
-Entry = namedtuple(
-    "Entry", ["date", "project", "start", "end", "brutto", "netto", "comment"]
-)
-
-
-class Colors:
-    HEADER = "\033[35m"
-    BLUE = "\033[34m"
-    CYAN = "\033[36m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    RED = "\033[31m"
-    ENDC = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    BG_RED = "\033[41m"
-    BG_GREEN = "\033[42m"
-    PROJECT_COLORS = [
-        "\033[34m",  # Blue
-        "\033[32m",  # Green
-        "\033[36m",  # Cyan
-        "\033[33m",  # Yellow
-        "\033[35m",  # Magenta
-        "\033[94m",  # Bright Blue
-        "\033[92m",  # Bright Green
-        "\033[96m",  # Bright Cyan
-        "\033[93m",  # Bright Yellow
-        "\033[95m",  # Bright Magenta
-    ]
-
-class UI:
-    @staticmethod
-    def get_width():
-        return shutil.get_terminal_size().columns
-
-    @staticmethod
-    def visible_len(text):
-        if not text: return 0
-        return len(re.sub(r"\033\[[0-9;]*m", "", str(text)))
-
-    @staticmethod
-    def ljust_visible(text, width):
-        v_len = UI.visible_len(text)
-        return text + " " * max(0, width - v_len)
-
-    @staticmethod
-    def center_visible(text, width):
-        v_len = UI.visible_len(text)
-        padding = max(0, width - v_len)
-        left = padding // 2
-        right = padding - left
-        return " " * left + text + " " * right
-
-    @staticmethod
-    def wrap_text(text, width):
-        if not text: return [""]
-        return textwrap.wrap(text, width, break_long_words=True) or [""]
-
-    @staticmethod
-    def print_centered(text, content_width=None):
-        term_width = UI.get_width()
-        v_len = UI.visible_len(text)
-        padding = max(0, (term_width - (content_width or v_len)) // 2)
-        print(" " * padding + text)
-
-    @staticmethod
-    def print_header(text):
-        term_width = UI.get_width()
-        print(f"\n{Colors.DIM}{'─' * term_width}{Colors.ENDC}")
-        UI.print_centered(f"{Colors.BOLD}{text.upper()}{Colors.ENDC}")
-        print(f"{Colors.DIM}{'─' * term_width}{Colors.ENDC}")
-
-    @staticmethod
-    def print_sub_header(text):
-        UI.print_centered(f"{Colors.CYAN}{Colors.BOLD}› {text}{Colors.ENDC}")
-
-    @staticmethod
-    def print_error(text):
-        UI.print_centered(f"{Colors.RED}✖ {text}{Colors.ENDC}")
-
-    @staticmethod
-    def print_warning(text):
-        UI.print_centered(f"{Colors.YELLOW}⚠ {text}{Colors.ENDC}")
-
-    @staticmethod
-    def print_success(text):
-        UI.print_centered(f"{Colors.GREEN}✔ {text}{Colors.ENDC}")
-
-    @staticmethod
-    def input(prompt):
-        # We can't easily center the interactive input without more complexity,
-        # but we can center the prompt line itself if we want.
-        # For now, let's keep it simple or just add some leading spaces.
-        term_width = UI.get_width()
-        # Roughly center the prompt line
-        # Note: input() prompt is a bit tricky to truly center with user input
-        # So we'll just add a small fixed indent or keep it left-aligned for clarity
-        user_input = input(f"{' ' * 4}{prompt}")
-        if user_input.lower() == "b":
-            UI.print_warning("\nOperation cancelled by user. Exiting...")
-            sys.exit(0)
-        return user_input
-
-    @staticmethod
-    def select_from_list(label, items):
-        UI.print_centered(f"\n{Colors.BOLD}{label}:{Colors.ENDC}")
-        for i, item in enumerate(items):
-            UI.print_centered(f"{Colors.BOLD}{i + 1}){Colors.ENDC} {item}")
-        while True:
-            try:
-                choice = int(
-                    UI.input(
-                        f"{Colors.CYAN}?{Colors.ENDC} Choice (1-{len(items)}): "
-                    )
-                )
-                if 1 <= choice <= len(items):
-                    return items[choice - 1]
-                UI.print_error("Invalid choice.")
-            except ValueError:
-                UI.print_error("Invalid input. Please enter a number.")
-
-
-# --- Logic and Calculations ---
-class Logic:
-    @staticmethod
-    def parse_time(time_str):
-        if not time_str or not time_str.isdigit() or not (3 <= len(time_str) <= 4):
-            return None
-        h, m = int(time_str[:-2]), int(time_str[-2:])
-        return f"{h:02}:{m:02}" if 0 <= h <= 23 and 0 <= m <= 59 else None
-
-    @staticmethod
-    def parse_duration(time_str):
-        try:
-            h, m = map(int, time_str.split(":"))
-            return timedelta(hours=h, minutes=m)
-        except (ValueError, AttributeError):
-            return timedelta(0)
-
-    @staticmethod
-    def format_duration(td, colored=False):
-        is_neg = td.total_seconds() < 0
-        total_secs = abs(int(td.total_seconds()))
-        h, m = total_secs // 3600, (total_secs % 3600) // 60
-        fmt = f"{'-' if is_neg else '+'}{h:02}:{m:02}"
-        return (
-            f"{Colors.RED if is_neg else Colors.GREEN}{fmt}{Colors.ENDC}"
-            if colored
-            else fmt
-        )
-
-    @staticmethod
-    def calculate_brutto(start_str, end_str):
-        s = datetime.strptime(start_str, "%H:%M")
-        e = datetime.strptime(end_str, "%H:%M")
-        if e < s:
-            e += timedelta(days=1)
-        return e - s
-
-    @staticmethod
-    def calculate_netto(brutto, project):
-        if project in ["Gleitzeit-Tag", "Urlaub"]:
-            return brutto, timedelta(0)
-        deduction = timedelta(
-            minutes=(
-                48
-                if brutto > timedelta(hours=6)
-                else 18 if brutto > timedelta(hours=3) else 0
-            )
-        )
-        return brutto - deduction, deduction
-
-
-# --- Data Management ---
-class Data:
-    @staticmethod
-    def load_all():
-        entries = []
-        earliest = (
-            datetime.strptime(START_DATE_OVERRIDE, "%Y-%m-%d").date()
-            if START_DATE_OVERRIDE
-            else None
-        )
-        if not os.path.exists(CSV_FILE):
-            return entries, earliest
-
-        with open(CSV_FILE, "r") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                try:
-                    dt = datetime.strptime(r["date"], "%Y-%m-%d").date()
-                    if earliest is None or dt < earliest:
-                        earliest = dt
-                    entries.append(
-                        Entry(
-                            r["date"],
-                            r["project"].strip('"'),
-                            r["start_time"],
-                            r["end_time"],
-                            r["brutto"],
-                            r["netto"],
-                            r["comment"].strip('"'),
-                        )
-                    )
-                except (ValueError, KeyError):
-                    continue
-        return entries, earliest
-
-    @staticmethod
-    def save_entry(entry):
-        header = "date,project,start_time,end_time,brutto,netto,comment\n"
-        exists = os.path.exists(CSV_FILE)
-        p, c = (
-            f'"{entry.project.replace('"', '""')}"',
-            f'"{entry.comment.replace('"', '""')}"',
-        )
-        line = f"{entry.date},{p},{entry.start},{entry.end},{entry.brutto},{entry.netto},{c}\n"
-        with open(CSV_FILE, "a") as f:
-            if not exists:
-                f.write(header)
-            f.write(line)
-        return True
-
-    @staticmethod
-    def delete_day(date_str):
-        if not os.path.exists(CSV_FILE):
-            return
-        with open(CSV_FILE, "r") as f:
-            reader = csv.reader(f)
-            rows = [row for row in reader if row and row[0] != date_str]
-        with open(CSV_FILE, "w") as f:
-            writer = csv.writer(f)
-            writer.writerows(rows)
-
-    @staticmethod
-    def delete_specific(date_str, idx):
-        if not os.path.exists(CSV_FILE):
-            return
-        with open(CSV_FILE, "r") as f:
-            reader = csv.reader(f)
-            header = next(reader)
-            all_rows = list(reader)
-
-        day_rows = sorted([r for r in all_rows if r[0] == date_str], key=lambda x: x[2])
-        other_rows = [r for r in all_rows if r[0] != date_str]
-
-        if 0 <= idx < len(day_rows):
-            rem = day_rows.pop(idx)
-            UI.print_success(f"Removed: {rem[2]}-{rem[3]} ({rem[1].strip('\"')})")
-
-        with open(CSV_FILE, "w") as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            writer.writerows(other_rows + day_rows)
-
-
 # --- Core Application Logic ---
 class TimekeepingApp:
     def __init__(self):
@@ -614,7 +324,7 @@ class TimekeepingApp:
                 [e for e in self.entries if e.date == d_str], key=lambda x: x.start
             )
             if not day_entries:
-                if UI.input("\nNo entries. Add one? (y/n): ").lower() == "y":
+                if UI.input("No entries. Add one? (y/n): ").lower() == "y":
                     self.create_entry(d_str)
                     self.entries, _ = Data.load_all()
                 else:
@@ -624,14 +334,14 @@ class TimekeepingApp:
             for i, e in enumerate(day_entries):
                 UI.print_centered(f"{Colors.BOLD}{i+1}){Colors.ENDC} {e.start}-{e.end} ({e.project})")
 
-            choice = UI.input("\n(a)dd, (d)elete, (c)lear, (b)ack: ").lower()
-
+            choice = UI.input("
+(a)dd, (d)elete, (c)lear, (b)ack: ").lower()
             if choice == "a":
                 self.create_entry(d_str)
                 self.entries, _ = Data.load_all()
             elif choice == "d":
                 try:
-                    idx = int(UI.input("\nIndex: ")) - 1
+                    idx = int(UI.input("Index: ")) - 1
                     Data.delete_specific(d_str, idx)
                     self.entries, _ = Data.load_all()
                 except ValueError:
@@ -646,7 +356,7 @@ class TimekeepingApp:
         if self.today.weekday() >= 5:
             return UI.print_error("Cannot clock in on weekends.")
         if os.path.exists(SESSION_FILE):
-            if UI.input("\nAlready clocked in. Overwrite? (y/n): ").lower() != "y":
+            if UI.input("Already clocked in. Overwrite? (y/n): ").lower() != "y":
                 return
         with open(SESSION_FILE, "w") as f:
             f.write(f"{self.today} {datetime.now().strftime('%H:%M')}")
@@ -665,9 +375,11 @@ class TimekeepingApp:
 def print_help():
     UI.print_header("Timekeeping CLI")
     UI.print_centered("A robust tool for tracking work hours and balances.")
-    UI.print_centered(f"\n{Colors.BOLD}USAGE:{Colors.ENDC}")
+    UI.print_centered(f"
+{Colors.BOLD}USAGE:{Colors.ENDC}")
     UI.print_centered("./time [COMMAND] [ARGS]")
-    UI.print_centered(f"\n{Colors.BOLD}COMMANDS:{Colors.ENDC}")
+    UI.print_centered(f"
+{Colors.BOLD}COMMANDS:{Colors.ENDC}")
     commands = [
         (f"{Colors.CYAN}[offset]{Colors.ENDC}", "Add a new time entry for today or relative day."),
         (f"{Colors.CYAN}--view [offset]{Colors.ENDC}", "View formatted timesheet and balances."),
@@ -702,8 +414,8 @@ def main():
         app.edit(int(args[1]) if len(args) > 1 else 0)
     elif args[0] in ["--bulk-gleitzeit", "--bulk-urlaub"]:
         UI.print_header("Bulk Entry")
-        start = UI.input("\nStart (YYYY-MM-DD or offset): ")
-        end = UI.input("\nEnd (YYYY-MM-DD or offset): ")
+        start = UI.input("Start (YYYY-MM-DD or offset): ")
+        end = UI.input("End (YYYY-MM-DD or offset): ")
         s_dt = app.today + timedelta(days=int(start)) if start.replace("-", "").isdigit() else datetime.strptime(start, "%Y-%m-%d").date()
         e_dt = app.today + timedelta(days=int(end)) if end.replace("-", "").isdigit() else datetime.strptime(end, "%Y-%m-%d").date()
         curr, count = s_dt, 0
