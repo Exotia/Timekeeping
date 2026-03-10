@@ -1,0 +1,6 @@
+{
+  "start_date": "2026-01-01",
+  "initial_balance": 0.00,
+  "projects": ["Exapmle Project 1", "Example Project 2"],
+  "daily_target_hours": 0.00
+}
