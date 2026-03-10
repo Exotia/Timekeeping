@@ -4,11 +4,13 @@ import calendar
 import csv
 import json
 import os
+import shutil
 import sys
 from collections import namedtuple
 from datetime import datetime, timedelta
 
 # --- Configuration ---
+# ... (rest of imports and config loading)
 CONFIG_FILE = os.path.expanduser("~/Timekeeping/config.json")
 
 try:
@@ -49,28 +51,48 @@ class Colors:
 # --- UI and Interaction ---
 class UI:
     @staticmethod
+    def get_width():
+        return shutil.get_terminal_size().columns
+
+    @staticmethod
+    def print_centered(text, content_width=None):
+        term_width = UI.get_width()
+        if content_width:
+            padding = max(0, (term_width - content_width) // 2)
+            print(" " * padding + text)
+        else:
+            print(text.center(term_width))
+
+    @staticmethod
     def print_header(text):
-        print(f"\n{Colors.BOLD}{Colors.HEADER}--- {text.upper()} ---{Colors.ENDC}")
+        UI.print_centered(f"\n{Colors.BOLD}{Colors.HEADER}--- {text.upper()} ---{Colors.ENDC}")
 
     @staticmethod
     def print_sub_header(text):
-        print(f"{Colors.OKCYAN}{text}{Colors.ENDC}")
+        UI.print_centered(f"{Colors.OKCYAN}{text}{Colors.ENDC}")
 
     @staticmethod
     def print_error(text):
-        print(f"{Colors.FAIL}Error: {text}{Colors.ENDC}")
+        UI.print_centered(f"{Colors.FAIL}Error: {text}{Colors.ENDC}")
 
     @staticmethod
     def print_warning(text):
-        print(f"{Colors.WARNING}{text}{Colors.ENDC}")
+        UI.print_centered(f"{Colors.WARNING}{text}{Colors.ENDC}")
 
     @staticmethod
     def print_success(text):
-        print(f"{Colors.OKGREEN}{text}{Colors.ENDC}")
+        UI.print_centered(f"{Colors.OKGREEN}{text}{Colors.ENDC}")
 
     @staticmethod
     def input(prompt):
-        user_input = input(prompt)
+        # We can't easily center the interactive input without more complexity,
+        # but we can center the prompt line itself if we want.
+        # For now, let's keep it simple or just add some leading spaces.
+        term_width = UI.get_width()
+        # Roughly center the prompt line
+        # Note: input() prompt is a bit tricky to truly center with user input
+        # So we'll just add a small fixed indent or keep it left-aligned for clarity
+        user_input = input(f"{' ' * 4}{prompt}")
         if user_input.lower() == "b":
             UI.print_warning("\nOperation cancelled by user. Exiting...")
             sys.exit(0)
@@ -78,14 +100,14 @@ class UI:
 
     @staticmethod
     def select_from_list(label, items):
-        print(f"\n{Colors.BOLD}{label}:{Colors.ENDC}")
+        UI.print_centered(f"\n{Colors.BOLD}{label}:{Colors.ENDC}")
         for i, item in enumerate(items):
-            print(f"  {Colors.BOLD}{i + 1}){Colors.ENDC} {item}")
+            UI.print_centered(f"{Colors.BOLD}{i + 1}){Colors.ENDC} {item}")
         while True:
             try:
                 choice = int(
                     UI.input(
-                        f"\n{Colors.OKCYAN}?{Colors.ENDC} Choice (1-{len(items)}): "
+                        f"{Colors.OKCYAN}?{Colors.ENDC} Choice (1-{len(items)}): "
                     )
                 )
                 if 1 <= choice <= len(items):
@@ -382,8 +404,13 @@ class TimekeepingApp:
         UI.print_sub_header(f"\n--- {calendar.month_name[month].upper()} {year} ---")
         header = ["DAY", "PROJECT", "START", "END", "BRUTTO", "NETTO", "COMMENT"]
         col_w = [8, 20, 7, 7, 8, 8, 25]
-        print("  ".join(h.ljust(col_w[i]) for i, h in enumerate(header)))
-        print("  ".join("-" * col_w[i] for i in range(len(header))))
+        total_width = sum(col_w) + (len(header) - 1) * 2  # Total table width
+
+        h_line = "  ".join(h.ljust(col_w[i]) for i, h in enumerate(header))
+        sep_line = "  ".join("-" * col_w[i] for i in range(len(header)))
+
+        UI.print_centered(h_line, total_width)
+        UI.print_centered(sep_line, total_width)
 
         entries_dict = {}
         for e in self.entries:
@@ -391,10 +418,21 @@ class TimekeepingApp:
             if dt.year == year and dt.month == month:
                 entries_dict.setdefault(dt.day, []).append(e)
 
-        _, last_day = calendar.monthrange(year, month)
-        total_width = sum(col_w) + 12
+        _, last_day_num = calendar.monthrange(year, month)
+        
+        # Trim leading/trailing weekends unless they have entries
+        start_d = 1
+        while start_d <= last_day_num and datetime(year, month, start_d).weekday() >= 5 and start_d not in entries_dict:
+            start_d += 1
+        
+        end_d = last_day_num
+        while end_d >= 1 and datetime(year, month, end_d).weekday() >= 5 and end_d not in entries_dict:
+            end_d -= 1
 
-        for d in range(1, last_day + 1):
+        if start_d > end_d:
+            return
+
+        for d in range(start_d, end_d + 1):
             curr = datetime(year, month, d)
             d_str = f"{curr.strftime('%a')} {d:02}"
 
@@ -406,65 +444,84 @@ class TimekeepingApp:
                         else d_str if i == 0 else ""
                     )
                     if e.project == "Urlaub":
-                        print(
-                            f"{Colors.OKGREEN}{'----# URLAUB #----'.center(total_width)}{Colors.ENDC}"
-                        )
+                        line_out = f"{Colors.OKGREEN}{'----# URLAUB #----'.center(total_width)}{Colors.ENDC}"
                     elif e.project == "Gleitzeit-Tag":
-                        print(
-                            f"  ".join(
-                                [
-                                    day_col.ljust(col_w[0] + (10 if i == 0 else 0)),
-                                    "X".center(col_w[1]),
-                                    "X".center(col_w[2]),
-                                    "X".center(col_w[3]),
-                                    "X".center(col_w[4]),
-                                    "X".center(col_w[5]),
-                                    "Gleitzeit-Tag",
-                                ]
-                            )
+                        line_out = "  ".join(
+                            [
+                                day_col.ljust(col_w[0] + (10 if i == 0 else 0)),
+                                "X".center(col_w[1]),
+                                "X".center(col_w[2]),
+                                "X".center(col_w[3]),
+                                "X".center(col_w[4]),
+                                "X".center(col_w[5]),
+                                "Gleitzeit-Tag",
+                            ]
                         )
                     else:
-                        print(
-                            "  ".join(
-                                [
-                                    day_col.ljust(col_w[0] + (10 if i == 0 else 0)),
-                                    e.project[: col_w[1]].ljust(col_w[1]),
-                                    e.start.ljust(col_w[2]),
-                                    e.end.ljust(col_w[3]),
-                                    e.brutto.ljust(col_w[4]),
-                                    e.netto.ljust(col_w[5]),
-                                    e.comment[: col_w[6]],
-                                ]
-                            )
-                        )
-            else:
-                if curr.weekday() >= 5:
-                    print(
-                        f"{Colors.YELLOW}{'----# WEEKEND #----'.center(total_width)}{Colors.ENDC}"
-                    )
-                elif curr.date() < self.today:
-                    print(
-                        f"{Colors.FAIL}{d_str.ljust(col_w[0])} {'!! NEEDS ATTENTION !!'.center(total_width-col_w[0])}{Colors.ENDC}"
-                    )
-                else:
-                    print(
-                        f"{Colors.DIM}{d_str.ljust(col_w[0])} {'_'.center(col_w[1])} {'_'.center(col_w[2])} {'_'.center(col_w[3])} {'_'.center(col_w[4])} {'_'.center(col_w[5])} {'_'.center(col_w[6])}{Colors.ENDC}"
-                    )
+                        comm = e.comment
+                        if len(comm) > col_w[6]:
+                            comm = comm[: col_w[6] - 3] + "..."
 
-            if curr.weekday() == 6:
+                        line_out = "  ".join(
+                            [
+                                day_col.ljust(col_w[0] + (10 if i == 0 else 0)),
+                                e.project[: col_w[1]].ljust(col_w[1]),
+                                e.start.ljust(col_w[2]),
+                                e.end.ljust(col_w[3]),
+                                e.brutto.ljust(col_w[4]),
+                                e.netto.ljust(col_w[5]),
+                                comm.ljust(col_w[6]),
+                            ]
+                        )
+                    UI.print_centered(line_out, total_width)
+            else:
+                if curr.weekday() == 5: # Saturday
+                    UI.print_centered(f"{Colors.YELLOW}{'----# WEEKEND #----'.center(total_width)}{Colors.ENDC}", total_width)
+                elif curr.weekday() == 6: # Sunday
+                    pass # Consolidated with Saturday
+                elif curr.date() < self.today:
+                    UI.print_centered(f"{Colors.FAIL}{d_str.ljust(col_w[0])} {'!! NEEDS ATTENTION !!'.center(total_width - col_w[0] - 2)}{Colors.ENDC}", total_width)
+                else:
+                    UI.print_centered(f"{Colors.DIM}{d_str.ljust(col_w[0])} {'_'.center(col_w[1])} {'_'.center(col_w[2])} {'_'.center(col_w[3])} {'_'.center(col_w[4])} {'_'.center(col_w[5])} {'_'.center(col_w[6])}{Colors.ENDC}", total_width)
+
+            if curr.weekday() == 6 or d == end_d:
                 y, w, _ = curr.isocalendar()
                 bal = wk_bals.get((y, w), timedelta(0))
                 lbl = f" WEEKLY BALANCE (KW {w}): "
-                print(
-                    f"{' '*(total_width-len(lbl)-6)}{Colors.DIM}{lbl}{Colors.ENDC}{Logic.format_duration(bal, True)}"
-                )
-                print("  ".join("-" * col_w[i] for i in range(len(header))))
+                bal_str = Logic.format_duration(bal, True)
+                UI.print_centered(f"{' ' * (total_width - len(lbl) - 6)}{Colors.DIM}{lbl}{Colors.ENDC}{bal_str}", total_width)
+                UI.print_centered("  ".join("-" * col_w[i] for i in range(len(header))), total_width)
 
         if mo_bal:
             lbl = "MONTHLY BALANCE: "
-            print(
-                f"{' '*(total_width-len(lbl)-6)}{lbl}{Logic.format_duration(mo_bal, True)}"
+            bal_str = Logic.format_duration(mo_bal, True)
+            UI.print_centered(f"{' ' * (total_width - len(lbl) - 6)}{lbl}{bal_str}", total_width)
+
+    def view(self, range_str):
+        try:
+            offsets = [int(x) for x in range_str.split()]
+            if not offsets:
+                offsets = [0]
+            elif len(offsets) == 1:
+                offsets = [offsets[0], 0] if offsets[0] < 0 else [0, offsets[0]]
+            start_off, end_off = min(offsets), max(offsets)
+        except ValueError:
+            start_off, end_off = 0, 0
+
+        gen_bal, mo_bals, wk_bals = self.get_balances()
+
+        for i in range(start_off, end_off + 1):
+            target = self.today + timedelta(days=i * 30)
+            self.render_month(
+                target.year,
+                target.month,
+                mo_bals.get((target.year, target.month)),
+                wk_bals,
             )
+
+        UI.print_centered("\n" + "=" * 40)
+        UI.print_centered(f"GENERAL BALANCE: {Logic.format_duration(gen_bal, colored=True)}")
+        UI.print_centered("=" * 40)
 
     def edit(self, offset):
         target = self.today + timedelta(days=offset)
@@ -483,9 +540,7 @@ class TimekeepingApp:
                 continue
 
             for i, e in enumerate(day_entries):
-                print(
-                    f"  {Colors.BOLD}{i+1}){Colors.ENDC} {e.start}-{e.end} ({e.project})"
-                )
+                UI.print_centered(f"{Colors.BOLD}{i+1}){Colors.ENDC} {e.start}-{e.end} ({e.project})")
 
             choice = UI.input("\n(a)dd, (d)elete, (c)lear, (b)ack: ").lower()
             if choice == "a":
@@ -525,23 +580,29 @@ class TimekeepingApp:
 
 
 def print_help():
-    print(f"""
-{Colors.BOLD}Timekeeping CLI{Colors.ENDC}
-A robust tool for tracking work hours and balances.
+    UI.print_header("Timekeeping CLI")
+    UI.print_centered("A robust tool for tracking work hours and balances.")
+    
+    UI.print_centered(f"\n{Colors.BOLD}USAGE:{Colors.ENDC}")
+    UI.print_centered("./time [COMMAND] [ARGS]")
 
-{Colors.BOLD}USAGE:{Colors.ENDC}
-  ./time [COMMAND] [ARGS]
-
-{Colors.BOLD}COMMANDS:{Colors.ENDC}
-  {Colors.OKCYAN}[offset]{Colors.ENDC}              Add a new time entry for today (0) or a relative day (e.g., -1).
-  {Colors.OKCYAN}--view [offset]{Colors.ENDC}       View formatted timesheet and balances.
-  {Colors.OKCYAN}--edit [offset]{Colors.ENDC}       Edit, add, or delete entries for a specific day.
-  {Colors.OKCYAN}--in{Colors.ENDC}                  Clock in for the current day.
-  {Colors.OKCYAN}--out{Colors.ENDC}                 Clock out and record the entry.
-  {Colors.OKCYAN}--bulk-gleitzeit{Colors.ENDC}      Record multiple Gleitzeit days at once.
-  {Colors.OKCYAN}--bulk-urlaub{Colors.ENDC}         Record multiple Urlaub days at once.
-  {Colors.OKCYAN}--help, -h{Colors.ENDC}            Show this help message.
-""")
+    UI.print_centered(f"\n{Colors.BOLD}COMMANDS:{Colors.ENDC}")
+    commands = [
+        (f"{Colors.OKCYAN}[offset]{Colors.ENDC}", "Add a new time entry for today or relative day."),
+        (f"{Colors.OKCYAN}--view [offset]{Colors.ENDC}", "View formatted timesheet and balances."),
+        (f"{Colors.OKCYAN}--edit [offset]{Colors.ENDC}", "Edit, add, or delete entries for a day."),
+        (f"{Colors.OKCYAN}--in{Colors.ENDC}", "Clock in for the current day."),
+        (f"{Colors.OKCYAN}--out{Colors.ENDC}", "Clock out and record the entry."),
+        (f"{Colors.OKCYAN}--bulk-gleitzeit{Colors.ENDC}", "Record multiple Gleitzeit days."),
+        (f"{Colors.OKCYAN}--bulk-urlaub{Colors.ENDC}", "Record multiple Urlaub days."),
+        (f"{Colors.OKCYAN}--help, -h{Colors.ENDC}", "Show this help message.")
+    ]
+    
+    max_cmd_len = max(len(c[0].replace(Colors.OKCYAN, "").replace(Colors.ENDC, "")) for c in commands)
+    for cmd, desc in commands:
+        line = f"{cmd.ljust(max_cmd_len + 15)} {desc}"
+        UI.print_centered(line, 80)
+    print()
 
 
 def main():
