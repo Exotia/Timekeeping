@@ -340,65 +340,70 @@ class TimekeepingApp:
             curr += timedelta(days=1)
         return gen_bal, mo_bals, wk_bals, mo_project_totals, all_projects, mo_target_totals, mo_netto_totals
 
-    def create_entry(self, date_str, force_project=None):
+    def create_entry(self, date_str, force_project=None, start_time=None, end_time=None):
         UI.print_header(f"Recording: {date_str}")
         existing = [e for e in self.entries if e.date == date_str]
 
         while True:
-            start_in = (
-                UI.input(
-                    f"{Colors.CYAN}?{Colors.ENDC} Start {Colors.DIM}(e.g. 800, '0' Gleitzeit, 'u' Urlaub){Colors.ENDC}: "
-                )
-                .strip()
-                .lower()
-            )
-            if start_in in ["0", "u"]:
-                if existing:
-                    UI.print_error("Cannot add special day to existing entries.")
-                    continue
-                proj, s_t, e_t = (
-                    ("Gleitzeit-Tag" if start_in == "0" else "Urlaub"),
-                    "00:00",
-                    "00:00",
-                )
-            else:
-                s_t = Logic.parse_time(start_in)
-                if not s_t:
-                    continue
-                if any(e.start == "00:00" and e.end == "00:00" for e in existing):
-                    UI.print_error("Day already has Gleitzeit/Urlaub.")
-                    continue
-
-                e_t = Logic.parse_time(
-                    UI.input(
-                        f"{Colors.CYAN}?{Colors.ENDC} End {Colors.DIM}(e.g. 1730){Colors.ENDC}: "
-                    )
-                )
-                if not e_t:
-                    continue
-
-                # Overlap check
-                ns, ne = datetime.strptime(
-                    f"{date_str} {s_t}", "%Y-%m-%d %H:%M"
-                ), datetime.strptime(f"{date_str} {e_t}", "%Y-%m-%d %H:%M")
-                if ne <= ns:
-                    ne += timedelta(days=1)
-                overlap = False
-                for e in existing:
-                    if e.start == "00:00" and e.end == "00:00":
-                        continue
-                    os, oe = datetime.strptime(
-                        f"{e.date} {e.start}", "%Y-%m-%d %H:%M"
-                    ), datetime.strptime(f"{e.date} {e.end}", "%Y-%m-%d %H:%M")
-                    if oe <= os:
-                        oe += timedelta(days=1)
-                    if ns < oe and ne > os:
-                        overlap = True
-                        break
-                if overlap:
-                    UI.print_error("Overlap detected.")
-                    continue
+            if start_time and end_time:
+                s_t, e_t = start_time, end_time
                 proj = force_project or UI.select_from_list("Project", PROJECTS)
+            else:
+                start_in = (
+                    UI.input(
+                        f"{Colors.CYAN}?{Colors.ENDC} Start {Colors.DIM}(e.g. 800, '0' Gleitzeit, 'u' Urlaub){Colors.ENDC}: "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if start_in in ["0", "u"]:
+                    if existing:
+                        UI.print_error("Cannot add special day to existing entries.")
+                        continue
+                    proj, s_t, e_t = (
+                        ("Gleitzeit-Tag" if start_in == "0" else "Urlaub"),
+                        "00:00",
+                        "00:00",
+                    )
+                else:
+                    s_t = Logic.parse_time(start_in)
+                    if not s_t:
+                        continue
+                    if any(e.start == "00:00" and e.end == "00:00" for e in existing):
+                        UI.print_error("Day already has Gleitzeit/Urlaub.")
+                        continue
+
+                    e_t = Logic.parse_time(
+                        UI.input(
+                            f"{Colors.CYAN}?{Colors.ENDC} End {Colors.DIM}(e.g. 1730){Colors.ENDC}: "
+                        )
+                    )
+                    if not e_t:
+                        continue
+                    proj = force_project or UI.select_from_list("Project", PROJECTS)
+
+            # Overlap check
+            ns, ne = datetime.strptime(
+                f"{date_str} {s_t}", "%Y-%m-%d %H:%M"
+            ), datetime.strptime(f"{date_str} {e_t}", "%Y-%m-%d %H:%M")
+            if ne <= ns:
+                ne += timedelta(days=1)
+            overlap = False
+            for e in existing:
+                if e.start == "00:00" and e.end == "00:00":
+                    continue
+                os, oe = datetime.strptime(
+                    f"{e.date} {e.start}", "%Y-%m-%d %H:%M"
+                ), datetime.strptime(f"{e.date} {e.end}", "%Y-%m-%d %H:%M")
+                if oe <= os:
+                    oe += timedelta(days=1)
+                if ns < oe and ne > os:
+                    overlap = True
+                    break
+            if overlap:
+                UI.print_error("Overlap detected.")
+                if start_time: return # Don't loop infinitely on automated entry
+                continue
 
             comm = (
                 proj
@@ -548,6 +553,7 @@ class TimekeepingApp:
                     day_cell_static = UI.ljust_visible(f" {d_str}", 9)
                     banner_text = f" {Colors.YELLOW}W E E K E N D{Colors.ENDC} "
                     remaining_width = total_content_width - 9 - 1
+                    # Modern styling for the spanning row
                     banner = f"{Colors.DIM}│{Colors.ENDC}{day_cell_static}{Colors.DIM}│{Colors.ENDC}{UI.center_visible(banner_text, remaining_width)}{Colors.DIM}│{Colors.ENDC}"
                     UI.print_centered(banner, total_width)
                 elif curr_dt.weekday() == 6: pass
@@ -657,8 +663,9 @@ class TimekeepingApp:
             return UI.print_error("Not clocked in.")
         with open(SESSION_FILE, "r") as f:
             d_str, s_t = f.read().split()
-        UI.print_header(f"Clock Out | Start: {s_t}")
-        self.create_entry(d_str)
+        e_t = datetime.now().strftime("%H:%M")
+        UI.print_header(f"Clock Out | Session: {s_t} - {e_t}")
+        self.create_entry(d_str, start_time=s_t, end_time=e_t)
         os.remove(SESSION_FILE)
 
 
