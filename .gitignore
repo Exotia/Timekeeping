@@ -1,6 +1,4 @@
-test_time.py
 PROJECT_SUMMARY.txt
 timesheet.csv
-time.py
-.coverage
 config.json
+temp_app.py

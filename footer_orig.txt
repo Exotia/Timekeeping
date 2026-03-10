@@ -1,293 +1,3 @@
-#!/usr/bin/env python3
-
-import calendar
-import csv
-import json
-import os
-import re
-import shutil
-import sys
-import textwrap
-from collections import namedtuple
-from datetime import datetime, timedelta
-
-# --- Configuration ---
-# ... (rest of imports and config loading)
-CONFIG_FILE = os.path.expanduser("~/Timekeeping/config.json")
-
-try:
-    with open(CONFIG_FILE, "r") as f:
-        config = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError, KeyError):
-    print(f"Error: Could not load {CONFIG_FILE}. Please ensure it exists and is valid.")
-    sys.exit(1)
-
-START_DATE_OVERRIDE = config["start_date"]
-INITIAL_BALANCE_HOURS = config["initial_balance"]
-PROJECTS = config["projects"]
-DAILY_TARGET = timedelta(hours=config["daily_target_hours"])
-
-CSV_FILE = os.path.expanduser("~/Timekeeping/timesheet.csv")
-SESSION_FILE = os.path.expanduser("~/Timekeeping/.active_in")
-
-# --- Data Models ---
-# date, project, start_time, end_time, brutto, netto, comment
-Entry = namedtuple(
-    "Entry", ["date", "project", "start", "end", "brutto", "netto", "comment"]
-)
-
-
-class Colors:
-    HEADER = "\033[95m"
-    BLUE = "\033[94m"
-    CYAN = "\033[96m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[31m"
-    ENDC = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[90m"
-    BG_RED = "\033[41m"
-    BG_GREEN = "\033[42m"
-    PROJECT_COLORS = [
-        "\033[94m",  # Blue
-        "\033[92m",  # Green
-        "\033[93m",  # Yellow
-        "\033[95m",  # Magenta
-        "\033[96m",  # Cyan
-        "\033[34m",  # Dark Blue
-        "\033[32m",  # Dark Green
-        "\033[33m",  # Dark Yellow
-        "\033[35m",  # Dark Magenta
-        "\033[36m",  # Dark Cyan
-    ]
-
-class UI:
-    @staticmethod
-    def get_width():
-        return shutil.get_terminal_size().columns
-
-    @staticmethod
-    def visible_len(text):
-        if not text: return 0
-        return len(re.sub(r"\033\[[0-9;]*m", "", str(text)))
-
-    @staticmethod
-    def ljust_visible(text, width):
-        v_len = UI.visible_len(text)
-        return text + " " * max(0, width - v_len)
-
-    @staticmethod
-    def center_visible(text, width):
-        v_len = UI.visible_len(text)
-        padding = max(0, width - v_len)
-        left = padding // 2
-        right = padding - left
-        return " " * left + text + " " * right
-
-    @staticmethod
-    def wrap_text(text, width):
-        if not text: return [""]
-        return textwrap.wrap(text, width, break_long_words=True) or [""]
-
-    @staticmethod
-    def print_centered(text, content_width=None):
-        term_width = UI.get_width()
-        v_len = UI.visible_len(text)
-        padding = max(0, (term_width - (content_width or v_len)) // 2)
-        print(" " * padding + text)
-
-    @staticmethod
-    def print_header(text):
-        term_width = UI.get_width()
-        print(f"\n{Colors.DIM}{'─' * term_width}{Colors.ENDC}")
-        UI.print_centered(f"{Colors.BOLD}{text.upper()}{Colors.ENDC}")
-        print(f"{Colors.DIM}{'─' * term_width}{Colors.ENDC}")
-
-    @staticmethod
-    def print_sub_header(text):
-        UI.print_centered(f"{Colors.CYAN}{Colors.BOLD}› {text}{Colors.ENDC}")
-
-    @staticmethod
-    def print_error(text):
-        UI.print_centered(f"{Colors.RED}✖ {text}{Colors.ENDC}")
-
-    @staticmethod
-    def print_warning(text):
-        UI.print_centered(f"{Colors.YELLOW}⚠ {text}{Colors.ENDC}")
-
-    @staticmethod
-    def print_success(text):
-        UI.print_centered(f"{Colors.GREEN}✔ {text}{Colors.ENDC}")
-
-    @staticmethod
-    def input(prompt):
-        # We can't easily center the interactive input without more complexity,
-        # but we can center the prompt line itself if we want.
-        # For now, let's keep it simple or just add some leading spaces.
-        term_width = UI.get_width()
-        # Roughly center the prompt line
-        # Note: input() prompt is a bit tricky to truly center with user input
-        # So we'll just add a small fixed indent or keep it left-aligned for clarity
-        user_input = input(f"{' ' * 4}{prompt}")
-        if user_input.lower() == "b":
-            UI.print_warning("\nOperation cancelled by user. Exiting...")
-            sys.exit(0)
-        return user_input
-
-    @staticmethod
-    def select_from_list(label, items):
-        UI.print_centered(f"\n{Colors.BOLD}{label}:{Colors.ENDC}")
-        for i, item in enumerate(items):
-            UI.print_centered(f"{Colors.BOLD}{i + 1}){Colors.ENDC} {item}")
-        while True:
-            try:
-                choice = int(
-                    UI.input(
-                        f"{Colors.CYAN}?{Colors.ENDC} Choice (1-{len(items)}): "
-                    )
-                )
-                if 1 <= choice <= len(items):
-                    return items[choice - 1]
-                UI.print_error("Invalid choice.")
-            except ValueError:
-                UI.print_error("Invalid input. Please enter a number.")
-
-
-# --- Logic and Calculations ---
-class Logic:
-    @staticmethod
-    def parse_time(time_str):
-        if not time_str or not time_str.isdigit() or not (3 <= len(time_str) <= 4):
-            return None
-        h, m = int(time_str[:-2]), int(time_str[-2:])
-        return f"{h:02}:{m:02}" if 0 <= h <= 23 and 0 <= m <= 59 else None
-
-    @staticmethod
-    def parse_duration(time_str):
-        try:
-            h, m = map(int, time_str.split(":"))
-            return timedelta(hours=h, minutes=m)
-        except (ValueError, AttributeError):
-            return timedelta(0)
-
-    @staticmethod
-    def format_duration(td, colored=False):
-        is_neg = td.total_seconds() < 0
-        total_secs = abs(int(td.total_seconds()))
-        h, m = total_secs // 3600, (total_secs % 3600) // 60
-        fmt = f"{'-' if is_neg else '+'}{h:02}:{m:02}"
-        return (
-            f"{Colors.RED if is_neg else Colors.GREEN}{fmt}{Colors.ENDC}"
-            if colored
-            else fmt
-        )
-
-    @staticmethod
-    def calculate_brutto(start_str, end_str):
-        s = datetime.strptime(start_str, "%H:%M")
-        e = datetime.strptime(end_str, "%H:%M")
-        if e < s:
-            e += timedelta(days=1)
-        return e - s
-
-    @staticmethod
-    def calculate_netto(brutto, project):
-        if project in ["Gleitzeit-Tag", "Urlaub"]:
-            return brutto, timedelta(0)
-        deduction = timedelta(
-            minutes=(
-                48
-                if brutto > timedelta(hours=6)
-                else 18 if brutto > timedelta(hours=3) else 0
-            )
-        )
-        return brutto - deduction, deduction
-
-
-# --- Data Management ---
-class Data:
-    @staticmethod
-    def load_all():
-        entries = []
-        earliest = (
-            datetime.strptime(START_DATE_OVERRIDE, "%Y-%m-%d").date()
-            if START_DATE_OVERRIDE
-            else None
-        )
-        if not os.path.exists(CSV_FILE):
-            return entries, earliest
-
-        with open(CSV_FILE, "r") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                try:
-                    dt = datetime.strptime(r["date"], "%Y-%m-%d").date()
-                    if earliest is None or dt < earliest:
-                        earliest = dt
-                    entries.append(
-                        Entry(
-                            r["date"],
-                            r["project"].strip('"'),
-                            r["start_time"],
-                            r["end_time"],
-                            r["brutto"],
-                            r["netto"],
-                            r["comment"].strip('"'),
-                        )
-                    )
-                except (ValueError, KeyError):
-                    continue
-        return entries, earliest
-
-    @staticmethod
-    def save_entry(entry):
-        header = "date,project,start_time,end_time,brutto,netto,comment\n"
-        exists = os.path.exists(CSV_FILE)
-        p, c = (
-            f'"{entry.project.replace('"', '""')}"',
-            f'"{entry.comment.replace('"', '""')}"',
-        )
-        line = f"{entry.date},{p},{entry.start},{entry.end},{entry.brutto},{entry.netto},{c}\n"
-        with open(CSV_FILE, "a") as f:
-            if not exists:
-                f.write(header)
-            f.write(line)
-        return True
-
-    @staticmethod
-    def delete_day(date_str):
-        if not os.path.exists(CSV_FILE):
-            return
-        with open(CSV_FILE, "r") as f:
-            reader = csv.reader(f)
-            rows = [row for row in reader if row and row[0] != date_str]
-        with open(CSV_FILE, "w") as f:
-            writer = csv.writer(f)
-            writer.writerows(rows)
-
-    @staticmethod
-    def delete_specific(date_str, idx):
-        if not os.path.exists(CSV_FILE):
-            return
-        with open(CSV_FILE, "r") as f:
-            reader = csv.reader(f)
-            header = next(reader)
-            all_rows = list(reader)
-
-        day_rows = sorted([r for r in all_rows if r[0] == date_str], key=lambda x: x[2])
-        other_rows = [r for r in all_rows if r[0] != date_str]
-
-        if 0 <= idx < len(day_rows):
-            rem = day_rows.pop(idx)
-            UI.print_success(f"Removed: {rem[2]}-{rem[3]} ({rem[1].strip('\"')})")
-
-        with open(CSV_FILE, "w") as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            writer.writerows(other_rows + day_rows)
-
-
 # --- Core Application Logic ---
 class TimekeepingApp:
     def __init__(self):
@@ -298,8 +8,6 @@ class TimekeepingApp:
         gen_bal = timedelta(hours=INITIAL_BALANCE_HOURS)
         mo_bals, wk_bals = {}, {}
         mo_project_totals = {}  # (year, month) -> {project -> total_timedelta}
-        mo_target_totals = {}   # (year, month) -> total_timedelta
-        mo_netto_totals = {}    # (year, month) -> total_timedelta
         all_projects = []
         entries_by_date = {}
         for e in self.entries:
@@ -313,8 +21,6 @@ class TimekeepingApp:
             m_key, (y, w, _) = (curr.year, curr.month), curr.isocalendar()
             w_key = (y, w)
             mo_bals.setdefault(m_key, timedelta(0))
-            mo_target_totals.setdefault(m_key, timedelta(0))
-            mo_netto_totals.setdefault(m_key, timedelta(0))
             wk_bals.setdefault(w_key, timedelta(0))
             mo_project_totals.setdefault(m_key, {})
 
@@ -324,21 +30,19 @@ class TimekeepingApp:
             if curr.weekday() < 5 and not is_urlaub:
                 gen_bal -= DAILY_TARGET
                 mo_bals[m_key] -= DAILY_TARGET
-                mo_target_totals[m_key] += DAILY_TARGET
                 wk_bals[w_key] -= DAILY_TARGET
 
             for e in entries_by_date.get(curr, []):
                 netto = Logic.parse_duration(e.netto)
                 gen_bal += netto
                 mo_bals[m_key] += netto
-                mo_netto_totals[m_key] += netto
                 wk_bals[w_key] += netto
                 
                 if e.project not in ["Gleitzeit-Tag", "Urlaub"]:
                     mo_project_totals[m_key][e.project] = mo_project_totals[m_key].get(e.project, timedelta(0)) + netto
                     
             curr += timedelta(days=1)
-        return gen_bal, mo_bals, wk_bals, mo_project_totals, all_projects, mo_target_totals, mo_netto_totals
+        return gen_bal, mo_bals, wk_bals, mo_project_totals, all_projects
 
     def create_entry(self, date_str, force_project=None):
         UI.print_header(f"Recording: {date_str}")
@@ -420,10 +124,13 @@ class TimekeepingApp:
             if Data.save_entry(new_e):
                 UI.print_success(f"Recorded '{proj}' for {date_str}")
                 if proj not in ["Gleitzeit-Tag", "Urlaub"]:
-                    UI.print_centered(f"Brutto: {new_e.brutto} | Break: {Logic.format_duration(ded)} | Netto: {new_e.netto}")
+                    print(
+                        f"Brutto: {new_e.brutto} | Break: {Logic.format_duration(ded)} | Netto: {new_e.netto}"
+                    )
                 break
 
     def view(self, range_str):
+        # Simplification of month parsing
         try:
             offsets = [int(x) for x in range_str.split()]
             if not offsets:
@@ -434,37 +141,31 @@ class TimekeepingApp:
         except ValueError:
             start_off, end_off = 0, 0
 
-        gen_bal, mo_bals, wk_bals, mo_proj_totals, all_projects, mo_target_totals, mo_netto_totals = self.get_balances()
-        proj_color_map = {p: Colors.PROJECT_COLORS[i % len(Colors.PROJECT_COLORS)] for i, p in enumerate(all_projects)}
+        gen_bal, mo_bals, wk_bals = self.get_balances()
 
         for i in range(start_off, end_off + 1):
-            target = self.today + timedelta(days=i * 30)
-            m_key = (target.year, target.month)
+            target = self.today + timedelta(days=i * 30)  # Rough month offset
             self.render_month(
                 target.year,
                 target.month,
-                mo_bals.get(m_key),
+                mo_bals.get((target.year, target.month)),
                 wk_bals,
-                mo_proj_totals.get(m_key, {}),
-                proj_color_map,
-                mo_target_totals.get(m_key),
-                mo_netto_totals.get(m_key)
             )
 
-        print()
-        UI.print_header("Total Summary")
-        UI.print_centered(f"{Colors.BOLD}GENERAL BALANCE: {Colors.ENDC}{Logic.format_duration(gen_bal, colored=True)}")
-        print()
+        print("\n" + "=" * 40)
+        print(f"GENERAL BALANCE: {Logic.format_duration(gen_bal, colored=True)}")
+        print("=" * 40)
 
-    def render_month(self, year, month, mo_bal, wk_bals, proj_totals, proj_colors, mo_target, mo_netto):
+    def render_month(self, year, month, mo_bal, wk_bals, proj_totals):
         title = f"{calendar.month_name[month].upper()} {year}"
         UI.print_sub_header(title)
         
         header = [" DAY", " PROJECT", " START", " END", " BRUTTO", " NETTO", " COMMENT"]
         col_w = [9, 18, 8, 8, 9, 9, 25]
-        total_content_width = sum(col_w) + (len(header) - 1)
-        total_width = total_content_width + 2
+        total_content_width = sum(col_w) + (len(header) - 1) # content + internal bars
+        total_width = total_content_width + 2 # + outer borders
         
+        # Border elements
         top = f"{Colors.DIM}┌{'┬'.join('─' * w for w in col_w)}┐{Colors.ENDC}"
         mid = f"{Colors.DIM}├{'┼'.join('─' * w for w in col_w)}┤{Colors.ENDC}"
         bot = f"{Colors.DIM}└{'┴'.join('─' * w for w in col_w)}┘{Colors.ENDC}"
@@ -482,9 +183,11 @@ class TimekeepingApp:
                 entries_dict.setdefault(dt.day, []).append(e)
 
         _, last_day_num = calendar.monthrange(year, month)
+        
         start_d = 1
         while start_d <= last_day_num and datetime(year, month, start_d).weekday() >= 5 and start_d not in entries_dict:
             start_d += 1
+        
         end_d = last_day_num
         while end_d >= 1 and datetime(year, month, end_d).weekday() >= 5 and end_d not in entries_dict:
             end_d -= 1
@@ -519,29 +222,42 @@ class TimekeepingApp:
                         ]
                         UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}" + f"{Colors.DIM}│{Colors.ENDC}".join(row) + f"{Colors.DIM}│{Colors.ENDC}", total_width)
                     else:
+                        # Wrapping logic
                         p_lines = UI.wrap_text(e.project, col_w[1] - 2)
                         c_lines = UI.wrap_text(e.comment, col_w[6] - 2)
                         max_l = max(len(p_lines), len(c_lines))
-                        p_color = proj_colors.get(e.project, Colors.ENDC)
                         
                         for j in range(max_l):
                             p_part = p_lines[j] if j < len(p_lines) else ""
                             c_part = c_lines[j] if j < len(c_lines) else ""
+                            
                             d_c = day_cell_val if j == 0 else UI.ljust_visible(" " * 9, 9)
                             s_c = f" {e.start}" if j == 0 else ""
                             e_c = f" {e.end}" if j == 0 else ""
                             b_c = f" {e.brutto}" if j == 0 else ""
                             n_c = f" {Colors.GREEN}{e.netto}{Colors.ENDC}" if j == 0 else ""
-                            row = [d_c, UI.ljust_visible(f" {p_color}{p_part}{Colors.ENDC}", col_w[1]), UI.ljust_visible(s_c, col_w[2]), UI.ljust_visible(e_c, col_w[3]), UI.ljust_visible(b_c, col_w[4]), UI.ljust_visible(n_c, col_w[5]), UI.ljust_visible(f" {c_part}", col_w[6])]
+                            
+                            row = [
+                                d_c,
+                                UI.ljust_visible(f" {p_part}", col_w[1]),
+                                UI.ljust_visible(s_c, col_w[2]),
+                                UI.ljust_visible(e_c, col_w[3]),
+                                UI.ljust_visible(b_c, col_w[4]),
+                                UI.ljust_visible(n_c, col_w[5]),
+                                UI.ljust_visible(f" {c_part}", col_w[6])
+                            ]
                             UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}" + f"{Colors.DIM}│{Colors.ENDC}".join(row) + f"{Colors.DIM}│{Colors.ENDC}", total_width)
             else:
-                if curr_dt.weekday() == 5:
-                    day_cell_static = UI.ljust_visible(f" {d_str}", 9)
+                if curr_dt.weekday() == 5: # Saturday
                     banner_text = f" {Colors.YELLOW}W E E K E N D{Colors.ENDC} "
+                    remaining_width = total_content_width - 12 # roughly matching previous banner logic but more precise
+                    # Let's be consistent:
+                    day_cell_static = UI.ljust_visible(f" {d_str}", 9)
                     remaining_width = total_content_width - 9 - 1
                     banner = f"{Colors.DIM}│{Colors.ENDC}{day_cell_static}{Colors.DIM}│{Colors.ENDC}{UI.center_visible(banner_text, remaining_width)}{Colors.DIM}│{Colors.ENDC}"
                     UI.print_centered(banner, total_width)
-                elif curr_dt.weekday() == 6: pass
+                elif curr_dt.weekday() == 6:
+                    pass
                 elif curr_dt < self.today:
                     day_cell = UI.ljust_visible(f" {Colors.RED}{d_str}{Colors.ENDC}", 9)
                     msg = f" {Colors.RED}!! MISSING ENTRY !!{Colors.ENDC} "
@@ -557,41 +273,73 @@ class TimekeepingApp:
                 y, w, _ = datetime(year, month, d).isocalendar()
                 bal_str = Logic.format_duration(wk_bals.get((y, w), timedelta(0)), True)
                 bal_label = f" {Colors.DIM}KW {w:02} Balance:{Colors.ENDC} {bal_str} "
+                # We want the footer row to span and align the balance to the right
                 footer_content = UI.ljust_visible(" " * (total_content_width - UI.visible_len(bal_label)), total_content_width - UI.visible_len(bal_label)) + bal_label
                 UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}{footer_content}{Colors.DIM}│{Colors.ENDC}", total_width)
                 UI.print_centered(mid if d < end_d else bot, total_width)
 
-        # Dashboard Box
-        if proj_totals or mo_bal:
+        # Monthly summary
+        if proj_totals:
             print()
-            box_w = total_width
-            UI.print_centered(f"{Colors.DIM}┌{'─' * (box_w - 2)}┐{Colors.ENDC}", box_w)
-            UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}{UI.center_visible(f'{Colors.BOLD}MONTHLY PERFORMANCE{Colors.ENDC}', box_w - 2)}{Colors.DIM}│{Colors.ENDC}", box_w)
-            UI.print_centered(f"{Colors.DIM}├{'─' * (box_w - 2)}┤{Colors.ENDC}", box_w)
-            
-            if proj_totals:
-                total_netto = sum(proj_totals.values(), timedelta(0))
-                for proj, duration in sorted(proj_totals.items(), key=lambda x: x[1], reverse=True):
-                    dur_str = Logic.format_duration(duration)
-                    perc = (duration.total_seconds() / total_netto.total_seconds() * 100) if total_netto.total_seconds() > 0 else 0
-                    bar_len = int(perc / 5) # 20 blocks max
-                    p_color = proj_colors.get(proj, Colors.CYAN)
-                    bar = f"{p_color}█{Colors.ENDC}" * bar_len + f"{Colors.DIM}░{Colors.ENDC}" * (20 - bar_len)
-                    
-                    stat_line = f" {p_color}{proj.ljust(18)}{Colors.ENDC} {bar} {dur_str.rjust(8)} ({perc:5.1f}%) "
-                    UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}{UI.center_visible(stat_line, box_w - 2)}{Colors.DIM}│{Colors.ENDC}", box_w)
-                
-                if mo_bal:
-                    UI.print_centered(f"{Colors.DIM}├{'─' * (box_w - 2)}┤{Colors.ENDC}", box_w)
+            UI.print_centered(f"{Colors.BOLD}PROJECT STATISTICS{Colors.ENDC}")
+            total_netto = sum(proj_totals.values(), timedelta(0))
+            for proj, duration in sorted(proj_totals.items(), key=lambda x: x[1], reverse=True):
+                dur_str = Logic.format_duration(duration)
+                perc = (duration.total_seconds() / total_netto.total_seconds() * 100) if total_netto.total_seconds() > 0 else 0
+                bar_len = int(perc / 5)
+                bar = f"{Colors.CYAN}█{Colors.ENDC}" * bar_len + f"{Colors.DIM}░{Colors.ENDC}" * (20 - bar_len)
+                UI.print_centered(f"{proj.rjust(20)} {bar} {dur_str} ({perc:5.1f}%)")
 
-            if mo_bal:
-                t_str = f"{Colors.DIM}Target:{Colors.ENDC} -{Logic.format_duration(mo_target)[1:]}"
-                n_str = f"{Colors.DIM}Netto:{Colors.ENDC} +{Logic.format_duration(mo_netto)[1:]}"
-                b_str = f"{Colors.BOLD}Balance:{Colors.ENDC} {Logic.format_duration(mo_bal, True)}"
-                summary_line = f" {t_str}   {n_str}   {b_str} "
-                UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}{UI.center_visible(summary_line, box_w - 2)}{Colors.DIM}│{Colors.ENDC}", box_w)
+        if mo_bal:
+            bal_str = Logic.format_duration(mo_bal, True)
+            print()
+            UI.print_centered(f"{Colors.BOLD}MONTHLY BALANCE: {Colors.ENDC}{bal_str}")
 
-            UI.print_centered(f"{Colors.DIM}└{'─' * (box_w - 2)}┘{Colors.ENDC}", box_w)
+        # Monthly summary
+        if proj_totals:
+            print()
+            UI.print_centered(f"{Colors.BOLD}PROJECT STATISTICS{Colors.ENDC}")
+            total_netto = sum(proj_totals.values(), timedelta(0))
+            for proj, duration in sorted(proj_totals.items(), key=lambda x: x[1], reverse=True):
+                dur_str = Logic.format_duration(duration)
+                perc = (duration.total_seconds() / total_netto.total_seconds() * 100) if total_netto.total_seconds() > 0 else 0
+                bar_len = int(perc / 5)
+                bar = f"{Colors.CYAN}█{Colors.ENDC}" * bar_len + f"{Colors.DIM}░{Colors.ENDC}" * (20 - bar_len)
+                UI.print_centered(f"{proj.rjust(20)} {bar} {dur_str} ({perc:5.1f}%)")
+
+        if mo_bal:
+            bal_str = Logic.format_duration(mo_bal, True)
+            print()
+            UI.print_centered(f"{Colors.BOLD}MONTHLY BALANCE: {Colors.ENDC}{bal_str}")
+
+    def view(self, range_str):
+        try:
+            offsets = [int(x) for x in range_str.split()]
+            if not offsets:
+                offsets = [0]
+            elif len(offsets) == 1:
+                offsets = [offsets[0], 0] if offsets[0] < 0 else [0, offsets[0]]
+            start_off, end_off = min(offsets), max(offsets)
+        except ValueError:
+            start_off, end_off = 0, 0
+
+        gen_bal, mo_bals, wk_bals, mo_proj_totals = self.get_balances()
+
+        for i in range(start_off, end_off + 1):
+            target = self.today + timedelta(days=i * 30)
+            m_key = (target.year, target.month)
+            self.render_month(
+                target.year,
+                target.month,
+                mo_bals.get(m_key),
+                wk_bals,
+                mo_proj_totals.get(m_key, {})
+            )
+
+        print()
+        UI.print_header("Total Summary")
+        UI.print_centered(f"{Colors.BOLD}GENERAL BALANCE: {Colors.ENDC}{Logic.format_duration(gen_bal, colored=True)}")
+        print()
 
     def edit(self, offset):
         target = self.today + timedelta(days=offset)
@@ -652,8 +400,10 @@ class TimekeepingApp:
 def print_help():
     UI.print_header("Timekeeping CLI")
     UI.print_centered("A robust tool for tracking work hours and balances.")
+    
     UI.print_centered(f"\n{Colors.BOLD}USAGE:{Colors.ENDC}")
     UI.print_centered("./time [COMMAND] [ARGS]")
+
     UI.print_centered(f"\n{Colors.BOLD}COMMANDS:{Colors.ENDC}")
     commands = [
         (f"{Colors.CYAN}[offset]{Colors.ENDC}", "Add a new time entry for today or relative day."),
@@ -665,6 +415,7 @@ def print_help():
         (f"{Colors.CYAN}--bulk-urlaub{Colors.ENDC}", "Record multiple Urlaub days."),
         (f"{Colors.CYAN}--help, -h{Colors.ENDC}", "Show this help message.")
     ]
+    
     max_cmd_len = max(len(c[0].replace(Colors.CYAN, "").replace(Colors.ENDC, "")) for c in commands)
     for cmd, desc in commands:
         line = f"{cmd.ljust(max_cmd_len + 15)} {desc}"
@@ -691,19 +442,32 @@ def main():
         UI.print_header("Bulk Entry")
         start = UI.input("Start (YYYY-MM-DD or offset): ")
         end = UI.input("End (YYYY-MM-DD or offset): ")
-        s_dt = app.today + timedelta(days=int(start)) if start.replace("-", "").isdigit() else datetime.strptime(start, "%Y-%m-%d").date()
-        e_dt = app.today + timedelta(days=int(end)) if end.replace("-", "").isdigit() else datetime.strptime(end, "%Y-%m-%d").date()
+        # Simple bulk implementation
+        s_dt = (
+            app.today + timedelta(days=int(start))
+            if start.replace("-", "").isdigit()
+            else datetime.strptime(start, "%Y-%m-%d").date()
+        )
+        e_dt = (
+            app.today + timedelta(days=int(end))
+            if end.replace("-", "").isdigit()
+            else datetime.strptime(end, "%Y-%m-%d").date()
+        )
         curr, count = s_dt, 0
         while curr <= e_dt:
             if curr.weekday() < 5 and not any(e.date == str(curr) for e in app.entries):
                 proj = "Gleitzeit-Tag" if args[0] == "--bulk-gleitzeit" else "Urlaub"
-                Data.save_entry(Entry(str(curr), proj, "00:00", "00:00", "00:00", "00:00", proj))
+                Data.save_entry(
+                    Entry(str(curr), proj, "00:00", "00:00", "00:00", "00:00", proj)
+                )
                 count += 1
             curr += timedelta(days=1)
         UI.print_success(f"Recorded {count} days.")
     else:
         try:
-            app.create_entry((app.today + timedelta(days=int(args[0]))).strftime("%Y-%m-%d"))
+            app.create_entry(
+                (app.today + timedelta(days=int(args[0]))).strftime("%Y-%m-%d")
+            )
         except ValueError:
             UI.print_error("Unknown command.")
             print_help()
