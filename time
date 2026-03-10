@@ -46,7 +46,7 @@ class Colors:
     RED = "\033[31m"
     ENDC = "\033[0m"
     BOLD = "\033[1m"
-    DIM = "\033[90m"
+    DIM = "\033[2m"
     BG_RED = "\033[41m"
     BG_GREEN = "\033[42m"
     PROJECT_COLORS = [
@@ -460,16 +460,25 @@ class TimekeepingApp:
         title = f"{calendar.month_name[month].upper()} {year}"
         UI.print_sub_header(title)
         
-        header = [" DAY", " PROJECT", " START", " END", " BRUTTO", " NETTO", " COMMENT"]
-        col_w = [9, 18, 8, 8, 9, 9, 25]
-        total_content_width = sum(col_w) + (len(header) - 1)
+        # Calculate dynamic widths
+        term_w = UI.get_width()
+        # Fixed columns: DAY(9), START(8), END(8), BRUTTO(9), NETTO(9) + 8 borders = 51
+        fixed_w = 51
+        flex_w = max(40, term_w - fixed_w)
+        proj_w = int(flex_w * 0.4)
+        comm_w = flex_w - proj_w
+        
+        col_w = [9, proj_w, 8, 8, 9, 9, comm_w]
+        total_content_width = sum(col_w) + (len(col_w) - 1)
         total_width = total_content_width + 2
         
+        # Border elements
         top = f"{Colors.DIM}┌{'┬'.join('─' * w for w in col_w)}┐{Colors.ENDC}"
         mid = f"{Colors.DIM}├{'┼'.join('─' * w for w in col_w)}┤{Colors.ENDC}"
         bot = f"{Colors.DIM}└{'┴'.join('─' * w for w in col_w)}┘{Colors.ENDC}"
         
-        h_line = f"{Colors.DIM}│{Colors.ENDC}" + f"{Colors.DIM}│{Colors.ENDC}".join(f"{Colors.BOLD}{h.ljust(col_w[i])}{Colors.ENDC}" for i, h in enumerate(header)) + f"{Colors.DIM}│{Colors.ENDC}"
+        header = [" DAY", " PROJECT", " START", " END", " BRUTTO", " NETTO", " COMMENT"]
+        h_line = f"{Colors.DIM}│{Colors.ENDC}" + f"{Colors.DIM}│{Colors.ENDC}".join(f"{Colors.BOLD}{header[i].ljust(col_w[i])}{Colors.ENDC}" for i in range(len(header))) + f"{Colors.DIM}│{Colors.ENDC}"
         
         UI.print_centered(top, total_width)
         UI.print_centered(h_line, total_width)
@@ -574,14 +583,14 @@ class TimekeepingApp:
                 for proj, duration in sorted(proj_totals.items(), key=lambda x: x[1], reverse=True):
                     dur_str = Logic.format_duration(duration)
                     perc = (duration.total_seconds() / total_netto.total_seconds() * 100) if total_netto.total_seconds() > 0 else 0
-                    bar_len = int(perc / 5) # 20 blocks max
-                    p_color = proj_colors.get(proj, Colors.CYAN)
-                    bar = f"{p_color}█{Colors.ENDC}" * bar_len + f"{Colors.DIM}░{Colors.ENDC}" * (20 - bar_len)
                     
-                    # Fix: Use ljust_visible for project name so bars align
-                    proj_cell = UI.ljust_visible(f" {p_color}{proj[:18]}{Colors.ENDC}", 20)
+                    bar_area_w = box_w - 50
+                    bar_len = int(bar_area_w * perc / 100)
+                    p_color = proj_colors.get(proj, Colors.CYAN)
+                    bar = f"{p_color}█{Colors.ENDC}" * bar_len + f"{Colors.DIM}░{Colors.ENDC}" * (max(0, bar_area_w - bar_len))
+                    
+                    proj_cell = UI.ljust_visible(f" {p_color}{proj[:25]}{Colors.ENDC}", 27)
                     stat_line = f"{proj_cell} {bar} {dur_str.rjust(8)} ({perc:5.1f}%) "
-                    # Center the entire structured line within the box
                     UI.print_centered(f"{Colors.DIM}│{Colors.ENDC}{UI.center_visible(stat_line, box_w - 2)}{Colors.DIM}│{Colors.ENDC}", box_w)
                 
                 if mo_bal:
@@ -605,7 +614,7 @@ class TimekeepingApp:
                 [e for e in self.entries if e.date == d_str], key=lambda x: x.start
             )
             if not day_entries:
-                if UI.input("No entries. Add one? (y/n): ").lower() == "y":
+                if UI.input("\nNo entries. Add one? (y/n): ").lower() == "y":
                     self.create_entry(d_str)
                     self.entries, _ = Data.load_all()
                 else:
@@ -616,12 +625,13 @@ class TimekeepingApp:
                 UI.print_centered(f"{Colors.BOLD}{i+1}){Colors.ENDC} {e.start}-{e.end} ({e.project})")
 
             choice = UI.input("\n(a)dd, (d)elete, (c)lear, (b)ack: ").lower()
+
             if choice == "a":
                 self.create_entry(d_str)
                 self.entries, _ = Data.load_all()
             elif choice == "d":
                 try:
-                    idx = int(UI.input("Index: ")) - 1
+                    idx = int(UI.input("\nIndex: ")) - 1
                     Data.delete_specific(d_str, idx)
                     self.entries, _ = Data.load_all()
                 except ValueError:
@@ -636,7 +646,7 @@ class TimekeepingApp:
         if self.today.weekday() >= 5:
             return UI.print_error("Cannot clock in on weekends.")
         if os.path.exists(SESSION_FILE):
-            if UI.input("Already clocked in. Overwrite? (y/n): ").lower() != "y":
+            if UI.input("\nAlready clocked in. Overwrite? (y/n): ").lower() != "y":
                 return
         with open(SESSION_FILE, "w") as f:
             f.write(f"{self.today} {datetime.now().strftime('%H:%M')}")
@@ -692,8 +702,8 @@ def main():
         app.edit(int(args[1]) if len(args) > 1 else 0)
     elif args[0] in ["--bulk-gleitzeit", "--bulk-urlaub"]:
         UI.print_header("Bulk Entry")
-        start = UI.input("Start (YYYY-MM-DD or offset): ")
-        end = UI.input("End (YYYY-MM-DD or offset): ")
+        start = UI.input("\nStart (YYYY-MM-DD or offset): ")
+        end = UI.input("\nEnd (YYYY-MM-DD or offset): ")
         s_dt = app.today + timedelta(days=int(start)) if start.replace("-", "").isdigit() else datetime.strptime(start, "%Y-%m-%d").date()
         e_dt = app.today + timedelta(days=int(end)) if end.replace("-", "").isdigit() else datetime.strptime(end, "%Y-%m-%d").date()
         curr, count = s_dt, 0
@@ -707,7 +717,7 @@ def main():
     else:
         try:
             app.create_entry((app.today + timedelta(days=int(args[0]))).strftime("%Y-%m-%d"))
-        except ValueError:
+        except (ValueError, IndexError):
             UI.print_error("Unknown command.")
             print_help()
 
