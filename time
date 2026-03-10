@@ -4,8 +4,19 @@ import calendar
 import csv
 import os
 import sys
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from datetime import datetime, timedelta
+
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich import box
+    from rich.text import Text
+    from rich.align import Align
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 # --- Configuration ---
 START_DATE_OVERRIDE = "2000-01-01"
@@ -78,6 +89,29 @@ class UI:
                 UI.print_error("Invalid input. Please enter a number.")
 
 
+    @staticmethod
+    def show_help():
+        UI.print_header("Timekeeping Application Help")
+        print(f"Usage: {Colors.OKCYAN}./time{Colors.ENDC} {Colors.DIM}[command] [offset/range]{Colors.ENDC}\n")
+        
+        print(f"{Colors.BOLD}Commands:{Colors.ENDC}")
+        print(f"  {Colors.DIM}(no args){Colors.ENDC}             Add entry for today.")
+        print(f"  {Colors.OKCYAN}[offset]{Colors.ENDC}              Add entry for a specific day relative to today (e.g., {Colors.DIM}-1{Colors.ENDC} for yesterday).")
+        print(f"  {Colors.OKCYAN}--view{Colors.ENDC} {Colors.DIM}[range]{Colors.ENDC}        View the timesheet. {Colors.DIM}range: offset (e.g. 0) or range (e.g. -1 0){Colors.ENDC}.")
+        print(f"  {Colors.OKCYAN}--bulk-gleitzeit{Colors.ENDC}      Bulk add flex days (Gleitzeit-Tag).")
+        print(f"  {Colors.OKCYAN}--bulk-urlaub{Colors.ENDC}         Bulk add vacation days (Urlaub).")
+        print(f"  {Colors.OKCYAN}--in{Colors.ENDC}                  Clock in (starts a session).")
+        print(f"  {Colors.OKCYAN}--out{Colors.ENDC}                 Clock out (ends session and records entry).")
+        print(f"  {Colors.OKCYAN}--edit{Colors.ENDC} {Colors.DIM}[offset]{Colors.ENDC}       Edit or delete entries for a specific day.")
+        print(f"  {Colors.OKCYAN}--help, -h{Colors.ENDC}            Show this help message.")
+        
+        print(f"\n{Colors.BOLD}Entry Types:{Colors.ENDC}")
+        print(f"  Start time: {Colors.OKCYAN}800{Colors.ENDC} {Colors.DIM}(08:00){Colors.ENDC}, {Colors.OKCYAN}0{Colors.ENDC} for {Colors.OKCYAN}Gleitzeit{Colors.ENDC}, {Colors.OKCYAN}u{Colors.ENDC} for {Colors.OKGREEN}Urlaub{Colors.ENDC}.")
+        print(f"  End time:   {Colors.OKCYAN}1730{Colors.ENDC} {Colors.DIM}(17:30){Colors.ENDC}.")
+        
+        print(f"\n{Colors.DIM}Global Exit: Type 'b' at any prompt to exit immediately.{Colors.ENDC}")
+
+
 # --- Logic and Calculations ---
 class Logic:
     @staticmethod
@@ -90,8 +124,10 @@ class Logic:
     @staticmethod
     def parse_duration(time_str):
         try:
-            h, m = map(int, time_str.split(":"))
-            return timedelta(hours=h, minutes=m)
+            is_neg = time_str.startswith("-")
+            h, m = map(int, time_str.lstrip("+-").split(":"))
+            td = timedelta(hours=h, minutes=m)
+            return -td if is_neg else td
         except (ValueError, AttributeError):
             return timedelta(0)
 
@@ -269,13 +305,118 @@ class TimekeepingApp:
 
         gen_bal, mo_bals, wk_bals = self.get_balances()
         
-        for i in range(start_off, end_off + 1):
-            target = self.today + timedelta(days=i * 30) # Rough month offset
-            self.render_month(target.year, target.month, mo_bals.get((target.year, target.month)), wk_bals)
+        if HAS_RICH:
+            console = Console()
+            for i in range(start_off, end_off + 1):
+                target = self.today + timedelta(days=i * 30) # Rough month offset
+                self.render_month_rich(console, target.year, target.month, mo_bals.get((target.year, target.month)), wk_bals)
+            
+            # General balance footer
+            is_neg = gen_bal.total_seconds() < 0
+            color = "red" if is_neg else "green"
+            bal_text = Logic.format_duration(gen_bal)
+            console.print(Align.center(Panel(f"[bold white]GENERAL BALANCE:[/bold white] [bold {color}]{bal_text}[/bold {color}]", box=box.DOUBLE, expand=False), vertical="middle"))
+        else:
+            for i in range(start_off, end_off + 1):
+                target = self.today + timedelta(days=i * 30) # Rough month offset
+                self.render_month(target.year, target.month, mo_bals.get((target.year, target.month)), wk_bals)
+            
+            print("\n" + "=" * 40)
+            print(f"GENERAL BALANCE: {Logic.format_duration(gen_bal, colored=True)}")
+            print("=" * 40)
+
+    def render_month_rich(self, console, year, month, mo_bal, wk_bals):
+        month_name = calendar.month_name[month]
+        title = f"[bold cyan]--- {month_name.upper()} {year} ---[/bold cyan]"
         
-        print("\n" + "=" * 40)
-        print(f"GENERAL BALANCE: {Logic.format_duration(gen_bal, colored=True)}")
-        print("=" * 40)
+        table = Table(title=title, box=box.ROUNDED, show_header=True, header_style="bold magenta", expand=True)
+        table.add_column("DAY", width=10)
+        table.add_column("PROJECT", width=25)
+        table.add_column("START", width=8, justify="center")
+        table.add_column("END", width=8, justify="center")
+        table.add_column("BRUTTO", width=10, justify="right")
+        table.add_column("NETTO", width=10, justify="right")
+        table.add_column("COMMENT", min_width=20)
+
+        entries_dict = {}
+        project_stats = defaultdict(timedelta)
+        for e in self.entries:
+            dt = datetime.strptime(e.date, "%Y-%m-%d").date()
+            if dt.year == year and dt.month == month:
+                entries_dict.setdefault(dt.day, []).append(e)
+                if e.project not in ["Urlaub", "Gleitzeit-Tag"]:
+                    project_stats[e.project] += Logic.parse_duration(e.netto)
+
+        _, last_day = calendar.monthrange(year, month)
+
+        for d in range(1, last_day + 1):
+            curr = datetime(year, month, d).date()
+            d_str = f"{curr.strftime('%a')} {d:02}"
+            
+            if d in entries_dict:
+                for i, e in enumerate(entries_dict[d]):
+                    # Highlight today or past days with entries
+                    day_style = "green" if curr <= self.today and i == 0 else "white" if i == 0 else "dim"
+                    day_val = Text(d_str if i == 0 else "", style=day_style)
+                    
+                    if e.project == "Urlaub":
+                        table.add_row(day_val, "[bold green]----# URLAUB #----[/bold green]", "", "", "", "", "", style="green")
+                    elif e.project == "Gleitzeit-Tag":
+                        table.add_row(day_val, "[cyan]Gleitzeit-Tag[/cyan]", "[cyan]X[/cyan]", "[cyan]X[/cyan]", "[cyan]X[/cyan]", "[cyan]X[/cyan]", "[cyan]Gleitzeit-Tag[/cyan]", style="cyan")
+                    else:
+                        netto_val = e.netto
+                        is_neg_netto = "-" in e.netto
+                        netto_style = "red" if is_neg_netto else "green"
+                        table.add_row(
+                            day_val, 
+                            e.project, 
+                            e.start, 
+                            e.end, 
+                            e.brutto, 
+                            Text(e.netto, style=netto_style), 
+                            e.comment
+                        )
+            else:
+                if curr.weekday() >= 5:
+                    table.add_row(d_str, "[yellow]----# WEEKEND #----[/yellow]", "", "", "", "", "", style="dim yellow")
+                elif curr < self.today:
+                    table.add_row(Text(d_str, style="red"), "[bold red]!! NEEDS ATTENTION !![/bold red]", "", "", "", "", "", style="red")
+                else:
+                    table.add_row(Text(d_str, style="dim"), "[dim]_ [/dim]", "[dim]_ [/dim]", "[dim]_ [/dim]", "[dim]_ [/dim]", "[dim]_ [/dim]", "[dim]_ [/dim]", style="dim")
+
+            if curr.weekday() == 6 or d == last_day:
+                y, w, _ = curr.isocalendar()
+                bal = wk_bals.get((y, w), timedelta(0))
+                is_neg_wk = bal.total_seconds() < 0
+                bal_style = "bold red" if is_neg_wk else "bold green"
+                bal_fmt = Logic.format_duration(bal)
+                
+                # Add weekly balance row if it's the end of the week
+                if curr.weekday() == 6:
+                    table.add_section()
+                    table.add_row("", f"[dim italic]WEEKLY BALANCE (KW {w})[/dim italic]", "", "", "", Text(bal_fmt, style=bal_style), "")
+                    table.add_section()
+
+        console.print(table)
+        
+        # Monthly Project Breakdown
+        if project_stats:
+            stats_table = Table(title=f"[bold cyan]Project Summary - {month_name}[/bold cyan]", box=box.SIMPLE_HEAD, show_header=True, header_style="bold blue", expand=False)
+            stats_table.add_column("Project", style="cyan")
+            stats_table.add_column("Total Time", justify="right", style="green")
+            
+            for proj, time_sum in sorted(project_stats.items()):
+                stats_table.add_row(proj, Logic.format_duration(time_sum))
+            
+            # Monthly balance footer
+            if mo_bal:
+                is_neg_mo = mo_bal.total_seconds() < 0
+                mo_style = "bold red" if is_neg_mo else "bold green"
+                stats_table.add_section()
+                stats_table.add_row("[bold]TOTAL MONTHLY BALANCE[/bold]", Text(Logic.format_duration(mo_bal), style=mo_style))
+            
+            console.print(Align.right(stats_table))
+            console.print("\n")
 
     def render_month(self, year, month, mo_bal, wk_bals):
         UI.print_sub_header(f"\n--- {calendar.month_name[month].upper()} {year} ---")
@@ -364,6 +505,7 @@ def main():
     app = TimekeepingApp()
     args = sys.argv[1:]
     if not args: app.create_entry(app.today.strftime("%Y-%m-%d"))
+    elif args[0] in ["--help", "-h"]: UI.show_help()
     elif args[0] == "--view": app.view(args[1] if len(args) > 1 else "0")
     elif args[0] == "--in": app.clock_in()
     elif args[0] == "--out": app.clock_out()
