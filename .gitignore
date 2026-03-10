@@ -3,3 +3,4 @@ PROJECT_SUMMARY.txt
 timesheet.csv
 time.py
 .coverage
+config.json
