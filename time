@@ -4,28 +4,29 @@ import calendar
 import csv
 import os
 import sys
-from collections import namedtuple, defaultdict
+from collections import defaultdict, namedtuple
 from datetime import datetime, timedelta
 
 try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
     from rich import box
-    from rich.text import Text
     from rich.align import Align
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
 
 # --- Configuration ---
+WORKHOURS = 00.0
 START_DATE_OVERRIDE = "2000-01-01"
 INITIAL_BALANCE_HOURS = 00.0
-PROJECTS = ["Ausbildung/Studenten", "Black Pearl Change"]
-CSV_FILE = os.path.expanduser("~/Timekeeping/timesheet.csv")
-SESSION_FILE = os.path.expanduser("~/Timekeeping/.active_in")
-DAILY_TARGET = timedelta(hours=1.8)
+PROJECTS = ["Insert any Projects in here"]
 
+SESSION_FILE = os.path.expanduser("~/Timekeeping/.active_in")
+CSV_FILE = os.path.expanduser("~/Timekeeping/timesheet.csv")
+DAILY_TARGET = timedelta(WORKHOURS)
 # --- Data Models ---
 # date, project, start_time, end_time, brutto, netto, comment
 Entry = namedtuple("Entry", ["date", "project", "start", "end", "brutto", "netto", "comment"])
