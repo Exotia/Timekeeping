@@ -65,14 +65,16 @@ impl Store {
         project: &str,
         comment: &str,
     ) -> StoreResult<Entry> {
-        self.ensure_work_day(date)?;
-        check_overlap(&self.entries_on(date)?, start, end, None)?;
-        let p = self.get_or_create_project(project)?;
-        self.conn().execute(
-            "INSERT INTO entries (date, start_min, end_min, project_id, comment) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![date_str(date), minutes_of(start), minutes_of(end), p.id, comment.trim()],
-        )?;
-        self.entry(self.conn().last_insert_rowid())
+        self.in_write_tx(|| {
+            self.ensure_work_day(date)?;
+            check_overlap(&self.entries_on(date)?, start, end, None)?;
+            let p = self.get_or_create_project(project)?;
+            self.conn().execute(
+                "INSERT INTO entries (date, start_min, end_min, project_id, comment) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![date_str(date), minutes_of(start), minutes_of(end), p.id, comment.trim()],
+            )?;
+            self.entry(self.conn().last_insert_rowid())
+        })
     }
 
     pub fn update_entry(
@@ -83,14 +85,16 @@ impl Store {
         project: &str,
         comment: &str,
     ) -> StoreResult<Entry> {
-        let existing = self.entry(id)?;
-        check_overlap(&self.entries_on(existing.date)?, start, end, Some(id))?;
-        let p = self.get_or_create_project(project)?;
-        self.conn().execute(
-            "UPDATE entries SET start_min = ?2, end_min = ?3, project_id = ?4, comment = ?5 WHERE id = ?1",
-            params![id, minutes_of(start), minutes_of(end), p.id, comment.trim()],
-        )?;
-        self.entry(id)
+        self.in_write_tx(|| {
+            let existing = self.entry(id)?;
+            check_overlap(&self.entries_on(existing.date)?, start, end, Some(id))?;
+            let p = self.get_or_create_project(project)?;
+            self.conn().execute(
+                "UPDATE entries SET start_min = ?2, end_min = ?3, project_id = ?4, comment = ?5 WHERE id = ?1",
+                params![id, minutes_of(start), minutes_of(end), p.id, comment.trim()],
+            )?;
+            self.entry(id)
+        })
     }
 
     pub fn delete_entry(&self, id: i64) -> StoreResult<()> {

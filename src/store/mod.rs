@@ -83,6 +83,24 @@ impl Store {
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Runs `f` inside an immediate write transaction, so that a check
+    /// (e.g. overlap detection, entry-count check) and its dependent write
+    /// are atomic against other writers on the same database file. `f` must
+    /// not itself start a transaction.
+    pub(crate) fn in_write_tx<T>(&self, f: impl FnOnce() -> StoreResult<T>) -> StoreResult<T> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f() {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
 }
 
 pub(crate) fn date_str(d: chrono::NaiveDate) -> String {
@@ -246,5 +264,31 @@ mod tests {
         s.backup_to(&bak).unwrap();
         let s2 = Store::open(&bak).unwrap();
         assert_eq!(s2.list_projects(true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn write_operations_are_transactional_against_concurrent_writers() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tk.db");
+        let a = Store::open(&path).unwrap();
+        let b = Store::open(&path).unwrap();
+        // b must fail fast instead of waiting out the default 5s busy timeout.
+        b.conn().busy_timeout(Duration::ZERO).unwrap();
+
+        let day = d(2026, 9, 14);
+
+        // Connection A holds the write lock via a raw immediate transaction,
+        // simulating another `tk` process mid check-then-act.
+        a.conn().execute_batch("BEGIN IMMEDIATE").unwrap();
+        let err = b.add_entry(day, t(8, 0), t(9, 0), "Alpha", "").unwrap_err();
+        assert!(matches!(err, StoreError::Sqlite(_)));
+        // A's transaction must not have been left half-open by B's failed attempt.
+        a.conn().execute_batch("COMMIT").unwrap();
+
+        // Once A releases the lock, B's write path succeeds normally.
+        b.add_entry(day, t(8, 0), t(9, 0), "Alpha", "").unwrap();
+        assert_eq!(b.entries_on(day).unwrap().len(), 1);
     }
 }
