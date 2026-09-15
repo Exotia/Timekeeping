@@ -24,7 +24,7 @@ initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
-theme = "dark"                     # "dark" | "light"
+theme = "dark"                     # "dark" | "light" | "purple"
 extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
@@ -95,8 +95,11 @@ impl Config {
         if self.daily_target_minutes <= 0 {
             return Err(invalid("daily_target_minutes", "must be greater than 0"));
         }
-        if !matches!(self.theme.as_str(), "dark" | "light") {
-            return Err(invalid("theme", "must be \"dark\" or \"light\""));
+        if !matches!(self.theme.as_str(), "dark" | "light" | "purple") {
+            return Err(invalid(
+                "theme",
+                "must be \"dark\", \"light\" or \"purple\"",
+            ));
         }
         if !matches!(self.week_starts_on.as_str(), "monday" | "sunday") {
             return Err(invalid(
@@ -282,6 +285,12 @@ mod tests {
             Err(ConfigError::Validation { field, .. }) => assert_eq!(field, "break_tiers"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn purple_theme_is_a_valid_choice() {
+        let toml = DEFAULT_TOML.replace("theme = \"dark\"", "theme = \"purple\"");
+        assert_eq!(Config::from_toml(&toml).unwrap().theme, "purple");
     }
 
     #[test]

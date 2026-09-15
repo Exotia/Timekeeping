@@ -97,6 +97,37 @@ impl Theme {
         }
     }
 
+    /// Deep purple ground with vivid green/red for balances.
+    pub fn purple() -> Theme {
+        Theme {
+            positive: rgb(0x22c55e),
+            negative: rgb(0xef4444),
+            warning: rgb(0xfacc15),
+            accent: rgb(0xa78bfa),
+            muted: rgb(0x7c6f9c),
+            text: rgb(0xede9fe),
+            bg_selected: rgb(0x2a1a4a),
+            chip_vacation: rgb(0x2dd4bf),
+            chip_flex: rgb(0xc084fc),
+            chip_holiday: rgb(0xfb923c),
+            chip_sick: rgb(0xf87171),
+            chip_absence: rgb(0xf472b6),
+            projects: [
+                rgb(0x4ade80),
+                rgb(0x2dd4bf),
+                rgb(0xa78bfa),
+                rgb(0xfbbf24),
+                rgb(0x38bdf8),
+                rgb(0xf472b6),
+                rgb(0x86efac),
+                rgb(0xc084fc),
+                rgb(0xfb923c),
+                rgb(0x67e8f9),
+            ],
+            border: BorderType::Rounded,
+        }
+    }
+
     pub fn from_config(cfg: &Config) -> Theme {
         Self::from_config_with(cfg, supports_truecolor())
     }
@@ -105,10 +136,10 @@ impl Theme {
     /// decision as a parameter instead of reading `COLORTERM`, so callers
     /// (notably tests) don't need to mutate process environment state.
     pub fn from_config_with(cfg: &Config, truecolor: bool) -> Theme {
-        let mut t = if cfg.theme == "light" {
-            Theme::light()
-        } else {
-            Theme::dark()
+        let mut t = match cfg.theme.as_str() {
+            "light" => Theme::light(),
+            "purple" => Theme::purple(),
+            _ => Theme::dark(),
         };
         for (k, v) in &cfg.theme_overrides {
             let Some(c) = parse_color(v) else { continue };
@@ -222,6 +253,19 @@ mod tests {
     use super::*;
     use crate::config::{Config, DEFAULT_TOML};
     use tuirealm::ratatui::style::Color;
+
+    #[test]
+    fn purple_theme_is_selected_from_config_and_uses_vivid_green_and_red() {
+        let toml = DEFAULT_TOML.replace("theme = \"dark\"", "theme = \"purple\"");
+        let cfg = Config::from_toml(&toml).unwrap();
+        let t = Theme::from_config_with(&cfg, true);
+        assert_eq!(t, Theme::purple());
+        assert_eq!(t.positive, Color::Rgb(0x22, 0xc5, 0x5e));
+        assert_eq!(t.negative, Color::Rgb(0xef, 0x44, 0x44));
+        assert_eq!(t.accent, Color::Rgb(0xa7, 0x8b, 0xfa));
+        assert_eq!(t.bg_selected, Color::Rgb(0x2a, 0x1a, 0x4a));
+        assert_ne!(Theme::purple(), Theme::dark());
+    }
 
     #[test]
     fn parses_hex_and_named() {

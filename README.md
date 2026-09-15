@@ -63,7 +63,7 @@ initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
-theme = "dark"                     # "dark" | "light"
+theme = "dark"                     # "dark" | "light" | "purple"
 extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
@@ -85,7 +85,7 @@ deduct_minutes = 48
 | `daily_target_minutes` | *required* | Target for one working day; must be greater than 0. `468` is 7:48. |
 | `vacation_days_per_year` | `30` | Allowance shown in the title bar and on the statistics screen; remaining = allowance − vacation working days taken in the calendar year. No carry-over. |
 | `week_starts_on` | `"monday"` | `"monday"` or `"sunday"`. Accepted and validated, but it has no effect yet: week rows are grouped by ISO week number, which always begins on Monday. |
-| `theme` | `"dark"` | `"dark"` or `"light"`. |
+| `theme` | `"dark"` | `"dark"`, `"light"` or `"purple"` (deep purple ground, vivid green/red balances). |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as public holidays on top of the built-in Saxon ones (company holidays such as 24 and 31 December). |
 | `[[break_tiers]]` | 180→18, 360→48 | Statutory break table. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
 | `[theme_overrides]` | empty | Per-role color overrides. |
