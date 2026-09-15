@@ -73,6 +73,11 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         Box::new(components::help::HelpOverlay::default()),
         vec![],
     )?;
+    app.mount(
+        Id::Day,
+        Box::new(components::day::DayScreen::default()),
+        vec![],
+    )?;
     app.active(&Id::Month)?;
 
     // Restore the terminal on panic so the shell is usable.
