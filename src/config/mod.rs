@@ -161,18 +161,27 @@ pub struct ConfigPatch {
     pub vacation_days_per_year: Option<u32>,
 }
 
-/// Write `v` to a root key, keeping the value's decor — the padding and the
-/// trailing `# comment` that follow it on the line. A key that is not in the file
-/// is appended to the root table, which `toml_edit` renders before the first
-/// `[[break_tiers]]`, because a table's own key/values always come before its
-/// sub-tables.
+/// Write `v` to a root key, keeping every byte of formatting around it.
+///
+/// A line's formatting lives in two places: the *key* carries what comes before
+/// it — the comment lines and blank lines above it, and the file header if it is
+/// the first key — and the *value* carries the padding and the trailing
+/// `# comment` after it. `Table::insert` replaces the stored key, and with it the
+/// comments above; re-inserting the existing key with `insert_formatted` keeps
+/// them. A key that is not in the file yet is appended to the root table, which
+/// `toml_edit` renders before the first `[[break_tiers]]`, because a table's own
+/// key/values always come before its sub-tables.
 fn set_root(doc: &mut DocumentMut, key: &str, v: Item) {
     let table = doc.as_table_mut();
+    let old_key = table.key(key).cloned();
     let decor = table
         .get(key)
         .and_then(Item::as_value)
         .map(|v| v.decor().clone());
-    table.insert(key, v);
+    match &old_key {
+        Some(k) => table.insert_formatted(k, v),
+        None => table.insert(key, v),
+    };
     if let Some(d) = decor
         && let Some(nv) = table.get_mut(key).and_then(Item::as_value_mut)
     {
@@ -212,7 +221,11 @@ impl Config {
         }
         let new_text = doc.to_string();
         let cfg = Config::from_toml(&new_text)?;
-        std::fs::write(&path, &new_text)?;
+        // Write beside the file and rename over it: a crash or a full disk leaves
+        // either the old config or the new one, never half of either.
+        let tmp = home.join("config.toml.tmp");
+        std::fs::write(&tmp, &new_text)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(cfg)
     }
 }
@@ -346,6 +359,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("h");
         let patch = ConfigPatch {
+            // `start_date` is the key the file header sits above, and
+            // `daily_target_minutes` carries a trailing comment.
+            start_date: Some(NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()),
             daily_target_minutes: Some(480),
             vacation_days_per_year: Some(28),
             ..Default::default()
@@ -356,11 +372,40 @@ mod tests {
         assert_eq!(c.vacation_days_per_year, 28);
         let written = std::fs::read_to_string(home.join("config.toml")).unwrap();
         let expected = DEFAULT_TOML
+            .replace("start_date = \"2026-01-01\"", "start_date = \"2026-04-01\"")
             .replace("daily_target_minutes = 468", "daily_target_minutes = 480")
             .replace("vacation_days_per_year = 30", "vacation_days_per_year = 28");
-        // Byte-for-byte except the two changed values: comments, alignment and the
-        // `[[break_tiers]]` tables all survive.
+        // Byte-for-byte except the three changed values: the file header, the
+        // comments on and above each key, the alignment and the `[[break_tiers]]`
+        // tables all survive.
         assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn write_updates_keeps_the_comments_above_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("h");
+        std::fs::create_dir_all(&home).unwrap();
+        // A hand-edited file: a note and a blank line directly above the key, and a
+        // note above a key the patch does not touch.
+        let original = DEFAULT_TOML.replace(
+            "daily_target_minutes = 468",
+            "# agreed with HR on 2026-03-01\n\ndaily_target_minutes = 468",
+        );
+        std::fs::write(home.join("config.toml"), &original).unwrap();
+        Config::write_updates(
+            &home,
+            &ConfigPatch {
+                daily_target_minutes: Some(480),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let written = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert_eq!(
+            written,
+            original.replace("daily_target_minutes = 468", "daily_target_minutes = 480")
+        );
     }
 
     #[test]
