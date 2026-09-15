@@ -97,12 +97,15 @@ pub fn build_month_view(
         }
 
         let is_sat = day.date.weekday() == Weekday::Sat;
-        let next_is_sun_empty = is_sat
-            && data
-                .days
-                .get(i + 1)
-                .is_some_and(|n| n.date.weekday() == Weekday::Sun && n.entries.is_empty());
-        if is_sat && day.entries.is_empty() && day.kind == DayKind::Work && next_is_sun_empty {
+        // Only collapse Sat+Sun into one banner row when BOTH are plain,
+        // entry-free work days; a special kind (vacation/flex/holiday/sick/
+        // absence) on either day always gets its own kind-chip row (spec
+        // §9.1: every special-kind day gets one row with a colored chip).
+        let next_is_sun_work_empty = is_sat
+            && data.days.get(i + 1).is_some_and(|n| {
+                n.date.weekday() == Weekday::Sun && n.kind == DayKind::Work && n.entries.is_empty()
+            });
+        if is_sat && day.entries.is_empty() && day.kind == DayKind::Work && next_is_sun_work_empty {
             let sun = &data.days[i + 1];
             let ss = day_stats(sun, rules, cal, &ctx);
             rows.push(Row {
@@ -217,12 +220,24 @@ pub fn row_index_of(v: &MonthView, date: NaiveDate) -> Option<usize> {
 }
 
 /// A row is selected iff it belongs to the selected date and isn't a
-/// week-footer; a collapsed weekend row is selected for either its Saturday
-/// or the following Sunday.
-fn row_is_selected(r: &Row, selected: NaiveDate) -> bool {
+/// week-footer; a *collapsed* weekend row (spanning both Saturday and
+/// Sunday) is also selected for the following Sunday. A lone weekend row
+/// (Saturday or Sunday processed on its own, e.g. because the other day of
+/// the pair has a special kind or entries) only matches its own date: we
+/// detect "collapsed" by checking that no other row in the view already
+/// owns the following day.
+fn row_is_selected(v: &MonthView, r: &Row, selected: NaiveDate) -> bool {
     match r.kind {
         RowKind::WeekFooter { .. } => false,
-        RowKind::Weekend => r.date == selected || r.date.succ_opt() == Some(selected),
+        RowKind::Weekend => {
+            if r.date == selected {
+                return true;
+            }
+            r.date.succ_opt() == Some(selected)
+                && !v.rows.iter().any(|other| {
+                    other.date == selected && !matches!(other.kind, RowKind::WeekFooter { .. })
+                })
+        }
         _ => r.date == selected,
     }
 }
@@ -309,7 +324,7 @@ pub fn draw_table(
         .rows
         .iter()
         .map(|r| {
-            let sel = row_is_selected(r, selected);
+            let sel = row_is_selected(v, r, selected);
             let is_today = r.date == today;
             let mark = if sel { "▶" } else { " " };
             let day_style = if is_today {
@@ -658,6 +673,82 @@ mod tests {
         } else {
             panic!("expected WeekFooter");
         }
+    }
+
+    #[test]
+    fn special_kind_on_sunday_gets_its_own_row() {
+        // Sat 2026-09-05 stays a plain work day; Sun 2026-09-06 becomes a
+        // Vacation day with no entries. They must NOT collapse into one
+        // "weekend" banner: the Sunday keeps its own kind-chip row.
+        let (mut data, rules, cal) = fixture();
+        let sun = data
+            .days
+            .iter_mut()
+            .find(|dd| dd.date == d(2026, 9, 6))
+            .unwrap();
+        sun.kind = DayKind::Vacation;
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+
+        let sat_idx = row_index_of(&v, d(2026, 9, 5)).unwrap();
+        let sun_idx = row_index_of(&v, d(2026, 9, 6)).unwrap();
+        assert!(matches!(v.rows[sat_idx].kind, RowKind::Weekend));
+        assert!(matches!(v.rows[sun_idx].kind, RowKind::Kind));
+        assert_eq!(sun_idx, sat_idx + 1);
+        // The week-36 footer still follows right after the Sunday row.
+        assert!(matches!(
+            v.rows[sun_idx + 1].kind,
+            RowKind::WeekFooter { .. }
+        ));
+        if let RowKind::WeekFooter { week, .. } = v.rows[sun_idx + 1].kind {
+            assert_eq!(week, 36);
+        }
+
+        // kind_counts counts both vacation days: Wed 2 and now Sun 6.
+        assert!(
+            v.kind_counts
+                .iter()
+                .any(|(k, n)| k == "vacation" && *n == 2)
+        );
+
+        // The rendered Sunday row shows its own VACATION chip.
+        let t = Theme::dark();
+        let rows = render(100, 40, |f| {
+            draw_table(
+                f,
+                f.area(),
+                &t,
+                &v,
+                &data,
+                d(2026, 9, 6),
+                d(2026, 9, 15),
+                true,
+            )
+        });
+        assert!(contains(&rows, "Sun 06"));
+        assert!(contains(&rows, "VACATION"));
+
+        // The other three, still-plain weekends each collapse into exactly
+        // one Weekend row (no regression from the fix); combined with the
+        // now-lone Saturday Weekend row that's 4 Weekend rows total, same
+        // as the unmodified fixture.
+        let weekend_rows = v
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Weekend))
+            .count();
+        assert_eq!(weekend_rows, 4);
+
+        // The unmodified fixture (all weekends plain) still collapses every
+        // Sat+Sun pair into exactly one Weekend row per weekend (4 weekends
+        // in September 2026).
+        let (plain_data, rules2, cal2) = fixture();
+        let plain_v = build_month_view(&plain_data, &rules2, &cal2, d(2026, 9, 15));
+        let plain_weekend_rows = plain_v
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Weekend))
+            .count();
+        assert_eq!(plain_weekend_rows, 4);
     }
 
     #[test]
