@@ -21,7 +21,10 @@ pub struct StatsView {
     pub total: Minutes,
     pub net: Minutes,
     pub target: Minutes,
-    pub vacation_used: u32,
+    /// Vacation working days inside the selected range.
+    pub vacation_in_range: u32,
+    /// Vacation working days in the whole calendar year — what the allowance is against.
+    pub vacation_used_year: u32,
     pub vacation_allowance: u32,
     pub sick: u32,
     pub flex: u32,
@@ -66,7 +69,7 @@ pub fn build_stats(
 ) -> StatsView {
     let ctx = TodayCtx {
         today,
-        clocked_in: false,
+        clocked_in: data.session_active,
     };
     let mut totals: std::collections::BTreeMap<String, Minutes> = Default::default();
     let mut v = StatsView {
@@ -76,7 +79,8 @@ pub fn build_stats(
         total: Minutes::ZERO,
         net: Minutes::ZERO,
         target: Minutes::ZERO,
-        vacation_used: 0,
+        vacation_in_range: 0,
+        vacation_used_year: data.vacation_used_year,
         vacation_allowance: allowance,
         sick: 0,
         flex: 0,
@@ -97,7 +101,7 @@ pub fn build_stats(
         }
         if is_working_day(day.date) {
             match day.kind {
-                DayKind::Vacation => v.vacation_used += 1,
+                DayKind::Vacation => v.vacation_in_range += 1,
                 DayKind::Sick => v.sick += 1,
                 DayKind::Flex => v.flex += 1,
                 DayKind::Holiday => v.holidays += 1,
@@ -212,10 +216,11 @@ pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: R
         Line::from(vec![
             Span::styled("vacation  ", Style::default().fg(t.chip_vacation)),
             Span::raw(format!(
-                "{} / {} used, {} left",
-                v.vacation_used,
+                "{} in range · {} / {} used this year, {} left",
+                v.vacation_in_range,
+                v.vacation_used_year,
                 v.vacation_allowance,
-                v.vacation_allowance.saturating_sub(v.vacation_used)
+                v.vacation_allowance.saturating_sub(v.vacation_used_year)
             )),
         ]),
         Line::from(vec![
@@ -303,6 +308,9 @@ mod tests {
             to: d(2026, 9, 8),
             days,
             projects: vec![],
+            // Four vacation days taken this year, one of them inside the range.
+            vacation_used_year: 4,
+            session_active: false,
         };
         let rules = Rules {
             daily_target: Minutes(468),
@@ -319,7 +327,12 @@ mod tests {
         );
         assert_eq!(v.project_totals[0], ("Alpha".to_string(), Minutes(480), 0));
         assert_eq!(v.total, Minutes(720));
-        assert_eq!((v.vacation_used, v.sick, v.flex, v.missing), (1, 1, 1, 1));
+        assert_eq!(
+            (v.vacation_in_range, v.sick, v.flex, v.missing),
+            (1, 1, 1, 1)
+        );
+        // What is left of the allowance follows the year, not the selected range.
+        assert_eq!(v.vacation_used_year, 4);
         let rows = render(100, 24, |f| {
             draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
         });
@@ -327,7 +340,10 @@ mod tests {
         assert!(contains(&rows, "Alpha"));
         assert!(contains(&rows, "66.7%"));
         assert!(contains(&rows, "vacation"));
-        assert!(contains(&rows, "1 / 30"));
+        assert!(contains(
+            &rows,
+            "1 in range · 4 / 30 used this year, 26 left"
+        ));
         assert!(contains(&rows, "[1] this month"));
     }
 }

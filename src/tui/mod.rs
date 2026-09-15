@@ -118,7 +118,6 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         quit: false,
         redraw: true,
         worker,
-        size: (0, 0),
         stats_range: msg::RangeKind::ThisMonth,
         form: None,
     };
@@ -142,13 +141,14 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         }
     }
     // Let the store thread drain everything queued before `Shutdown` (a mutating key and `q`
-    // can arrive in the same tick batch), then restore the terminal whatever the join did.
+    // can arrive in the same tick batch). The terminal goes back to normal first, so that a
+    // slow or wedged drain is not spent staring at the alternate screen — and so that the
+    // join error below is printed into a usable shell.
     model.worker.send(msg::StoreCmd::Shutdown);
-    let joined = worker_handle.join();
     if let Some(mut t) = model.terminal.take() {
         t.restore()?;
     }
-    if joined.is_err() {
+    if worker_handle.join().is_err() {
         anyhow::bail!("the store thread died; recent changes may not have been saved");
     }
     Ok(())

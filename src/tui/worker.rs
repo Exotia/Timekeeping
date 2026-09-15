@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use chrono::{Datelike, Local, NaiveDate};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tuirealm::event::Event;
-use tuirealm::listener::{PollAsync, PortResult};
+use tuirealm::listener::{PollAsync, PortError, PortResult};
 
 use super::msg::{DayData, MonthData, StatsData, StoreCmd, StoreReply, UserEvent};
 use crate::cli::Ctx;
@@ -83,6 +83,29 @@ fn balance_through(
     Ok(running_balance(&stats, &rules))
 }
 
+/// (1 January, 31 December) of `year`.
+fn year_range(year: i32) -> (NaiveDate, NaiveDate) {
+    (
+        NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
+        NaiveDate::from_ymd_opt(year, 12, 31).unwrap(),
+    )
+}
+
+/// Vacation days that consume the allowance: stored `Vacation` kinds on working days.
+fn count_vacation(ctx: &Ctx, from: NaiveDate, to: NaiveDate) -> anyhow::Result<u32> {
+    Ok(ctx
+        .store
+        .stored_kinds_in(from, to)?
+        .iter()
+        .filter(|(d, k)| **k == DayKind::Vacation && is_working_day(**d))
+        .count() as u32)
+}
+
+fn vacation_working_days_in_year(ctx: &Ctx, year: i32) -> anyhow::Result<u32> {
+    let (y0, y1) = year_range(year);
+    count_vacation(ctx, y0, y1)
+}
+
 fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
     let now = Local::now().naive_local();
     let today = now.date();
@@ -92,16 +115,8 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             let cal = ctx.config.calendar();
             let session = ctx.store.session()?;
             let days = ctx.store.days_in(from, to, &cal)?;
-            let (y0, y1) = (
-                NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap(),
-                NaiveDate::from_ymd_opt(today.year(), 12, 31).unwrap(),
-            );
-            let vacation_used_this_year = ctx
-                .store
-                .stored_kinds_in(y0, y1)?
-                .iter()
-                .filter(|(d, k)| **k == DayKind::Vacation && is_working_day(**d))
-                .count() as u32;
+            let (y0, y1) = year_range(today.year());
+            let vacation_used_this_year = count_vacation(ctx, y0, y1)?;
             StoreReply::Month(MonthData {
                 year,
                 month,
@@ -130,6 +145,10 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             to,
             days: ctx.store.days_in(from, to, &ctx.config.calendar())?,
             projects: ctx.store.list_projects(true)?,
+            // The allowance is a calendar-year budget, so what is left of it never
+            // depends on the range the user happens to be looking at.
+            vacation_used_year: vacation_working_days_in_year(ctx, today.year())?,
+            session_active: ctx.store.session()?.is_some(),
         }),
         StoreCmd::AddEntry {
             date,
@@ -220,10 +239,13 @@ impl StorePort {
 #[tuirealm::async_trait]
 impl PollAsync<UserEvent> for StorePort {
     async fn poll(&mut self) -> PortResult<Option<Event<UserEvent>>> {
-        Ok(self
-            .rx
-            .recv()
-            .await
-            .map(|r| Event::User(UserEvent::Store(r))))
+        match self.rx.recv().await {
+            Some(r) => Ok(Some(Event::User(UserEvent::Store(r)))),
+            // A plain `Ok(None)` retires the port silently; a permanent error retires it
+            // too, but surfaces in `Application::tick` so the user is told.
+            None => Err(PortError::PermanentError(
+                "the store thread stopped sending replies".into(),
+            )),
+        }
     }
 }

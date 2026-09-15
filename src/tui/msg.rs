@@ -129,6 +129,11 @@ pub struct StatsData {
     pub to: NaiveDate,
     pub days: Vec<Day>,
     pub projects: Vec<Project>,
+    /// Vacation working days taken in the whole calendar year of today — the
+    /// allowance is a yearly budget, so the remainder must not follow the range.
+    pub vacation_used_year: u32,
+    /// Whether a clock-in is open right now, for today's target rule.
+    pub session_active: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

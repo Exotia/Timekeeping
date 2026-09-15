@@ -256,9 +256,10 @@ impl AppComponent<Msg, UserEvent> for EntryForm {
         let KeyEvent { code, modifiers } = *ev.as_keyboard()?;
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
-            // Ctrl+S saves; every other control chord is swallowed so that e.g.
-            // Ctrl+C does not end up typed into a field.
+            // Ctrl+C quits from anywhere, Ctrl+S saves; every other control chord is
+            // swallowed so that it does not end up typed into a field.
             return match code {
+                Key::Char('c') => Some(Msg::Quit),
                 Key::Char('s') => Some(Msg::FormSubmit(self.data())),
                 _ => None,
             };
@@ -377,6 +378,22 @@ mod tests {
                 KeyModifiers::CONTROL
             ))),
             Some(Msg::FormSubmit(f.data()))
+        );
+        // Ctrl+C quits even with the overlay in front.
+        assert_eq!(
+            f.on(&Event::Keyboard(KeyEvent::new(
+                Key::Char('c'),
+                KeyModifiers::CONTROL
+            ))),
+            Some(Msg::Quit)
+        );
+        // Any other chord is still swallowed rather than typed.
+        assert_eq!(
+            f.on(&Event::Keyboard(KeyEvent::new(
+                Key::Char('x'),
+                KeyModifiers::CONTROL
+            ))),
+            None
         );
     }
 

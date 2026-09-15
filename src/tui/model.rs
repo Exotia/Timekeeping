@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Days, Local, NaiveDate, NaiveTime, Timelike};
+use chrono::{Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use tuirealm::application::Application;
 use tuirealm::props::{AttrValue, Attribute};
 use tuirealm::ratatui::Frame;
@@ -19,7 +19,7 @@ use super::theme::Theme;
 use super::view::chrome;
 use super::worker::Worker;
 use crate::core::{
-    Entry, HolidayCalendar, Minutes, Rules, check_overlap, deduction, minutes_of, parse_time,
+    Entry, HolidayCalendar, Minutes, Rules, check_overlap, check_range, deduction, parse_time,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,6 @@ pub struct Model {
     pub quit: bool,
     pub redraw: bool,
     pub worker: Worker,
-    pub size: (u16, u16),
     pub stats_range: RangeKind,
     pub form: Option<FormState>,
 }
@@ -76,15 +75,12 @@ pub fn validate_form(
         .map_err(|_| format!("start: '{}' is not a time (try 800 or 8:00)", d.start))?;
     let end = parse_time(&d.end)
         .map_err(|_| format!("end: '{}' is not a time (try 1730 or 17:30)", d.end))?;
-    // `Entry::interval` reads `end <= start` as crossing midnight and adds a day, so an
-    // equal pair silently becomes a 24-hour entry that then overlaps everything else.
-    // `end < start` is a genuine crossing and stays allowed.
-    if minutes_of(end) == minutes_of(start) {
-        return Err(
-            "end: must differ from start (use a later time, or an earlier one to cross midnight)"
-                .into(),
-        );
-    }
+    // One shared rule with the parser and the store; only the wording is the form's,
+    // because the form names the field that is wrong.
+    check_range(start, end).map_err(|_| {
+        "end: must differ from start (use a later time, or an earlier one to cross midnight)"
+            .to_string()
+    })?;
     if d.project.trim().is_empty() {
         return Err("project: required".into());
     }
@@ -122,16 +118,24 @@ impl Model {
         self.status = Some((msg.into(), is_error, Instant::now()));
     }
 
-    pub fn load_month(&self) {
-        self.worker.send(StoreCmd::LoadMonth {
+    /// Queue a command for the store thread, saying so in the status bar if that
+    /// thread is gone — otherwise the UI would keep accepting keys that do nothing.
+    pub fn send(&mut self, cmd: StoreCmd) {
+        if !self.worker.send(cmd) {
+            self.set_status("store thread stopped — quit with q and restart", true);
+        }
+    }
+
+    pub fn load_month(&mut self) {
+        self.send(StoreCmd::LoadMonth {
             year: self.selected.year(),
             month: self.selected.month(),
         });
     }
 
-    fn load_stats(&self) {
+    fn load_stats(&mut self) {
         let (from, to) = super::view::stats::range_for(self.stats_range, self.today);
-        self.worker.send(StoreCmd::LoadStats { from, to });
+        self.send(StoreCmd::LoadStats { from, to });
     }
 
     pub fn focus(&mut self, id: Id) {
@@ -293,15 +297,13 @@ impl Model {
                 }
             }
             Msg::ClockIn => {
-                if !crate::core::is_working_day(self.today) {
-                    self.set_status("Cannot clock in on a weekend", true);
-                    return;
-                }
+                // No weekday condition: weekend work counts towards the balance, and
+                // the CLI (`tk in`) has always allowed it.
                 if self.month.as_ref().is_some_and(|m| m.session.is_some()) {
                     self.open_confirm(Confirm::ClockInReplace);
                     return;
                 }
-                self.worker.send(StoreCmd::ClockIn(
+                self.send(StoreCmd::ClockIn(
                     self.today,
                     self.now.with_second(0).unwrap(),
                 ));
@@ -311,7 +313,7 @@ impl Model {
                     self.set_status("Not clocked in", true);
                     return;
                 }
-                self.worker.send(StoreCmd::ClockOut {
+                self.send(StoreCmd::ClockOut {
                     project: None,
                     comment: String::new(),
                 });
@@ -342,15 +344,15 @@ impl Model {
                 self.close_overlay();
                 match c {
                     Confirm::DeleteEntry(id) => {
-                        self.worker.send(StoreCmd::DeleteEntry(id));
+                        self.send(StoreCmd::DeleteEntry(id));
                     }
                     Confirm::SetKind(d, k) => {
-                        self.worker.send(StoreCmd::SetKind(d, k));
+                        self.send(StoreCmd::SetKind(d, k));
                     }
                     Confirm::ClockInReplace => {
                         // Replacing discards the running session rather than recording it.
-                        self.worker.send(StoreCmd::ClearSession);
-                        self.worker.send(StoreCmd::ClockIn(
+                        self.send(StoreCmd::ClearSession);
+                        self.send(StoreCmd::ClockIn(
                             self.today,
                             self.now.with_second(0).unwrap(),
                         ));
@@ -383,7 +385,7 @@ impl Model {
                 self.screen = Screen::Day;
                 self.day = None;
                 self.day_cursor = 0;
-                self.worker.send(StoreCmd::LoadDay(self.selected));
+                self.send(StoreCmd::LoadDay(self.selected));
                 self.focus(Id::Day);
             }
             Msg::DaySelect(n) => {
@@ -418,7 +420,7 @@ impl Model {
                     Some("absence"),
                 )
                 .unwrap();
-                self.worker.send(StoreCmd::SetKind(d.day.date, kind));
+                self.send(StoreCmd::SetKind(d.day.date, kind));
             }
             // --- end day editor (Task 15) ---
             // --- entry form (Task 16) ---
@@ -470,7 +472,7 @@ impl Model {
                         let comment = data.comment.trim().to_string();
                         match data.id {
                             None => {
-                                self.worker.send(StoreCmd::AddEntry {
+                                self.send(StoreCmd::AddEntry {
                                     date: day.day.date,
                                     start,
                                     end,
@@ -479,7 +481,7 @@ impl Model {
                                 });
                             }
                             Some(id) => {
-                                self.worker.send(StoreCmd::UpdateEntry {
+                                self.send(StoreCmd::UpdateEntry {
                                     id,
                                     start,
                                     end,
@@ -509,7 +511,7 @@ impl Model {
                 }
                 self.load_month();
                 if self.screen == Screen::Day {
-                    self.worker.send(StoreCmd::LoadDay(self.selected));
+                    self.send(StoreCmd::LoadDay(self.selected));
                 }
             }
             StoreReply::Failed(e) => self.set_status(e, true),
@@ -574,9 +576,14 @@ impl Model {
             ),
             balance: m.map(|m| m.balance_total).unwrap_or_default(),
             clock: m.and_then(|m| m.session.as_ref()).map(|s| {
+                // Both ends as date-times: a session opened yesterday keeps counting
+                // instead of freezing at 00:00 when the clock passes midnight.
                 (
                     s.start.format("%H:%M").to_string(),
-                    crate::core::Minutes((self.now - s.start).num_minutes().max(0) as i32),
+                    crate::core::running_minutes(
+                        NaiveDateTime::new(s.date, s.start),
+                        NaiveDateTime::new(self.today, self.now),
+                    ),
                 )
             }),
             vacation: m.map(|m| (m.vacation_used_this_year, self.vacation_allowance)),
@@ -705,7 +712,6 @@ pub mod testing {
             quit: false,
             redraw: false,
             worker: Worker { tx },
-            size: (100, 30),
             stats_range: RangeKind::ThisMonth,
             form: None,
         };
@@ -815,13 +821,46 @@ mod tests {
     }
 
     #[test]
-    fn clock_in_on_weekend_is_refused() {
+    fn clock_in_on_weekend_is_allowed() {
+        // Weekend work counts positively towards the balance, so nothing refuses it.
         let sat = d(2026, 9, 19);
         let (mut m, rx) = model(sat);
         m.month = Some(month_data(sat, vec![], None));
         m.update(Msg::ClockIn);
-        assert!(rx.try_recv().is_err());
-        assert!(m.status.as_ref().unwrap().1);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockIn(dt, _) if dt == sat));
+        assert!(m.status.is_none(), "no complaint in the status bar");
+    }
+
+    #[test]
+    fn a_dead_store_thread_is_reported_in_the_status_bar() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        drop(rx); // the store thread is gone
+        m.update(Msg::GoToday);
+        let (msg, is_error, _) = m.status.as_ref().expect("a status message");
+        assert!(is_error, "shown as an error");
+        assert!(msg.contains("store thread stopped"), "{msg}");
+    }
+
+    #[test]
+    fn a_session_from_yesterday_keeps_counting_past_midnight() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        m.now = NaiveTime::from_hms_opt(1, 0, 0).unwrap();
+        m.month = Some(month_data(
+            today,
+            vec![],
+            Some(crate::store::Session {
+                date: d(2026, 9, 14),
+                start: NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                project: None,
+            }),
+        ));
+        let info = m.title_info();
+        assert_eq!(
+            info.clock,
+            Some(("23:00".to_string(), crate::core::Minutes(120)))
+        );
     }
 
     #[test]
