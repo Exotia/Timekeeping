@@ -1,6 +1,22 @@
-use chrono::{Days, NaiveDate, NaiveTime};
+use chrono::{Days, NaiveDate, NaiveTime, TimeDelta, Timelike};
 
-use super::CoreError;
+use super::{CoreError, minutes_of};
+
+/// End time to record when clocking out at `now` for a session started at `start`.
+///
+/// `now` is truncated to whole minutes, because entries are stored at minute granularity.
+/// If that lands on the very minute the session started, one minute is added instead: a
+/// zero-length entry would normalise to `end <= start`, i.e. a 24-hour shift.
+///
+/// Clocking out at exactly 23:59 therefore yields 00:00, which core reads as a one-minute
+/// entry crossing midnight (`0 + 1440 - 1439 == 1`).
+pub fn clock_out_end(start: NaiveTime, now: NaiveTime) -> NaiveTime {
+    let end = NaiveTime::from_hms_opt(now.hour(), now.minute(), 0).unwrap_or(now);
+    if minutes_of(end) == minutes_of(start) {
+        return end.overflowing_add_signed(TimeDelta::minutes(1)).0;
+    }
+    end
+}
 
 pub fn parse_time(s: &str) -> Result<NaiveTime, CoreError> {
     let err = || CoreError::InvalidTime(s.to_string());
@@ -63,6 +79,21 @@ mod tests {
 
     fn t(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn clock_out_end_never_produces_a_zero_length_entry() {
+        // (a) same minute as the start, with the sub-minute parts `Local::now()` carries.
+        let start = t(9, 0);
+        let now = NaiveTime::from_hms_nano_opt(9, 0, 42, 123_456).unwrap();
+        assert_eq!(clock_out_end(start, now), t(9, 1));
+        // (b) later: truncated to the minute.
+        let now = NaiveTime::from_hms_nano_opt(15, 29, 59, 999_999_999).unwrap();
+        assert_eq!(clock_out_end(start, now), t(15, 29));
+        // (c) the last minute of the day wraps to 00:00, which core reads as one minute.
+        let start = t(23, 59);
+        let now = NaiveTime::from_hms_nano_opt(23, 59, 30, 0).unwrap();
+        assert_eq!(clock_out_end(start, now), t(0, 0));
     }
 
     #[test]

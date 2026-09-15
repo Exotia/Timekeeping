@@ -34,7 +34,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
     let vacation_allowance = ctx.config.vacation_days_per_year;
 
     let (reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel::<StoreReply>();
-    let worker = worker::spawn_worker(ctx, reply_tx);
+    let (worker, worker_handle) = worker::spawn_worker(ctx, reply_tx);
 
     let cfg = EventListenerCfg::default()
         .with_handle(rt.handle().clone())
@@ -135,9 +135,15 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
             model.redraw = false;
         }
     }
+    // Let the store thread drain everything queued before `Shutdown` (a mutating key and `q`
+    // can arrive in the same tick batch), then restore the terminal whatever the join did.
     model.worker.send(msg::StoreCmd::Shutdown);
+    let joined = worker_handle.join();
     if let Some(mut t) = model.terminal.take() {
         t.restore()?;
+    }
+    if joined.is_err() {
+        anyhow::bail!("the store thread died; recent changes may not have been saved");
     }
     Ok(())
 }

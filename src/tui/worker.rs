@@ -2,35 +2,41 @@
 //! that carries its replies back into the tui-realm event listener.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::thread;
+use std::thread::{self, JoinHandle};
 
-use chrono::{Datelike, Local, NaiveDate, TimeDelta, Timelike};
+use chrono::{Datelike, Local, NaiveDate};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tuirealm::event::Event;
 use tuirealm::listener::{PollAsync, PortResult};
 
 use super::msg::{DayData, MonthData, StatsData, StoreCmd, StoreReply, UserEvent};
 use crate::cli::Ctx;
-use crate::core::{DayKind, Minutes, TodayCtx, day_stats, is_working_day, running_balance};
+use crate::core::{
+    DayKind, Minutes, TodayCtx, clock_out_end, day_stats, is_working_day, running_balance,
+};
 
 pub struct Worker {
     pub tx: Sender<StoreCmd>,
 }
 
 impl Worker {
-    pub fn send(&self, cmd: StoreCmd) {
-        let _ = self.tx.send(cmd);
+    /// Queue a command for the store thread. Returns `false` once that thread is gone.
+    pub fn send(&self, cmd: StoreCmd) -> bool {
+        self.tx.send(cmd).is_ok()
     }
 }
 
 /// Spawn the store thread. All database work happens there, never on the UI thread.
-pub fn spawn_worker(ctx: Ctx, reply_tx: UnboundedSender<StoreReply>) -> Worker {
+///
+/// The returned [`JoinHandle`] must be joined after sending [`StoreCmd::Shutdown`], otherwise
+/// commands still queued when the user quits are dropped without ever reaching SQLite.
+pub fn spawn_worker(ctx: Ctx, reply_tx: UnboundedSender<StoreReply>) -> (Worker, JoinHandle<()>) {
     let (tx, rx) = channel::<StoreCmd>();
-    thread::Builder::new()
+    let handle = thread::Builder::new()
         .name("tk-store".into())
         .spawn(move || worker_loop(ctx, rx, reply_tx))
         .expect("spawn worker");
-    Worker { tx }
+    (Worker { tx }, handle)
 }
 
 fn worker_loop(ctx: Ctx, rx: Receiver<StoreCmd>, reply: UnboundedSender<StoreReply>) {
@@ -179,11 +185,7 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 Some(p) => p,
                 None => anyhow::bail!("no project yet; add the entry from the day editor"),
             };
-            let mut end = now.time().with_second(0).unwrap_or(now.time());
-            if end == s.start {
-                // A zero-length clock-out would look like a 24h shift once end <= start.
-                end = end.overflowing_add_signed(TimeDelta::minutes(1)).0;
-            }
+            let end = clock_out_end(s.start, now.time());
             let e = ctx
                 .store
                 .add_entry(s.date, s.start, end, &project, &comment)?;

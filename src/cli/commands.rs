@@ -1,12 +1,12 @@
 use std::io::Write;
 
 use anyhow::{Context as _, anyhow, bail};
-use chrono::{Days, Local, NaiveDate, NaiveDateTime, TimeDelta, Timelike};
+use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 
 use super::{Command, Ctx, ProjectAction};
 use crate::core::{
-    DayKind, Minutes, TodayCtx, day_stats, parse_date, parse_time_range, provisional_net,
-    running_balance,
+    DayKind, Minutes, TodayCtx, clock_out_end, day_stats, parse_date, parse_time_range,
+    provisional_net, running_balance,
 };
 
 pub fn now_local() -> NaiveDateTime {
@@ -84,12 +84,7 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 Some(p) => p,
                 None => bail!("no project given and none used before; pass --project NAME"),
             };
-            let mut end = now.time().with_second(0).unwrap_or(now.time());
-            if end == s.start {
-                // A zero-length clock-out would look like a 24h shift once end <= start.
-                // Record a 1-minute entry instead.
-                end = end.overflowing_add_signed(TimeDelta::minutes(1)).0;
-            }
+            let end = clock_out_end(s.start, now.time());
             let e = ctx.store.add_entry(
                 s.date,
                 s.start,
