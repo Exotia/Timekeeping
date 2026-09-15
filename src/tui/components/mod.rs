@@ -4,6 +4,7 @@
 pub mod bridge;
 pub mod confirm;
 pub mod day;
+pub mod field_form;
 pub mod form;
 pub mod help;
 pub mod month;
