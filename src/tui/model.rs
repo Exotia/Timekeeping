@@ -18,7 +18,9 @@ use super::msg::{
 use super::theme::Theme;
 use super::view::chrome;
 use super::worker::Worker;
-use crate::core::{Entry, HolidayCalendar, Minutes, Rules, check_overlap, deduction, parse_time};
+use crate::core::{
+    Entry, HolidayCalendar, Minutes, Rules, check_overlap, deduction, minutes_of, parse_time,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -74,6 +76,15 @@ pub fn validate_form(
         .map_err(|_| format!("start: '{}' is not a time (try 800 or 8:00)", d.start))?;
     let end = parse_time(&d.end)
         .map_err(|_| format!("end: '{}' is not a time (try 1730 or 17:30)", d.end))?;
+    // `Entry::interval` reads `end <= start` as crossing midnight and adds a day, so an
+    // equal pair silently becomes a 24-hour entry that then overlaps everything else.
+    // `end < start` is a genuine crossing and stays allowed.
+    if minutes_of(end) == minutes_of(start) {
+        return Err(
+            "end: must differ from start (use a later time, or an earlier one to cross midnight)"
+                .into(),
+        );
+    }
     if d.project.trim().is_empty() {
         return Err("project: required".into());
     }
@@ -151,7 +162,9 @@ impl Model {
         let _ = self.app.umount(&Id::Form);
         let _ = self.app.mount(
             Id::Form,
-            Box::new(components::form::EntryForm::new(data.clone(), projects)),
+            Box::new(
+                components::form::EntryForm::new(data.clone(), projects).with_theme(&self.theme),
+            ),
             vec![],
         );
         self.form = Some(FormState {
@@ -915,6 +928,15 @@ mod tests {
                 .unwrap_err()
                 .contains("overlap")
         );
+        // A zero-length entry would be stretched to a full day by `Entry::interval`.
+        assert!(
+            validate_form(&fd("0900", "0900", "A"), &existing, &m.rules)
+                .unwrap_err()
+                .contains("end")
+        );
+        // Crossing midnight is still fine.
+        let over = validate_form(&fd("2200", "0200", "A"), &existing, &m.rules).unwrap();
+        assert_eq!(over.2, crate::core::Minutes(240));
         // editing entry 1 itself may overlap its old slot
         let mut edit = fd("0900", "1200", "A");
         edit.id = Some(1);

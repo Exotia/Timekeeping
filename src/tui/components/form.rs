@@ -10,16 +10,17 @@ use tui_realm_stdlib::components::Input;
 use tuirealm::command::{Cmd, CmdResult, Direction, Position};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers};
-use tuirealm::props::{
-    AttrValue, Attribute, BorderSides, BorderType, Borders, Color, Props, QueryResult, Style,
-};
+use tuirealm::props::{AttrValue, Attribute, Borders, Props, QueryResult, Style};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Layout, Rect};
+use tuirealm::ratatui::style::Modifier;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Clear, Paragraph};
+use tuirealm::ratatui::widgets::{Clear, Paragraph};
 use tuirealm::state::{State, StateValue};
 
 use crate::tui::msg::{FormData, Msg, UserEvent};
+use crate::tui::theme::Theme;
+use crate::tui::view::block;
 use crate::tui::view::chrome::centered;
 
 /// Custom attribute the model sets when the footer text is an error message.
@@ -30,6 +31,35 @@ const PROJECT: usize = 2;
 /// Index of the last field; Enter there submits.
 const LAST: usize = 3;
 
+const TITLES: [&str; 4] = ["Start", "End", "Project", "Comment"];
+const PLACEHOLDERS: [&str; 4] = [
+    "0800",
+    "1730",
+    "type to filter, up/down to pick",
+    "optional",
+];
+
+/// The four inputs, painted in `t`.
+fn build_fields(t: &Theme, initial: &FormData) -> [Input; 4] {
+    let values = [
+        &initial.start,
+        &initial.end,
+        &initial.project,
+        &initial.comment,
+    ];
+    std::array::from_fn(|i| {
+        Input::default()
+            .title(TITLES[i])
+            .value(values[i].as_str())
+            .placeholder(PLACEHOLDERS[i])
+            .borders(Borders::default().modifiers(t.border).color(t.muted))
+            .foreground(t.text)
+            // Dim the fields that do not have the caret, so the focus ring is obvious.
+            .inactive(Style::default().fg(t.muted))
+            .invalid_style(Style::default().fg(t.negative))
+    })
+}
+
 pub struct EntryForm {
     props: Props,
     fields: [Input; 4],
@@ -37,37 +67,37 @@ pub struct EntryForm {
     id: Option<i64>,
     projects: Vec<String>,
     picker_idx: usize,
+    theme: Theme,
 }
 
 impl EntryForm {
     pub fn new(initial: FormData, projects: Vec<String>) -> Self {
-        let mk = |title: &'static str, value: &str, placeholder: &'static str| {
-            Input::default()
-                .title(title)
-                .value(value)
-                .placeholder(placeholder)
-                .borders(Borders::default().modifiers(BorderType::Rounded))
-                .invalid_style(Style::default().fg(Color::Red))
-        };
+        // `new`'s signature is pinned, so the palette arrives afterwards through
+        // `with_theme`; until then the built-in dark theme stands in (component unit
+        // tests never set one).
+        let theme = Theme::dark();
         let mut f = Self {
             props: Props::default(),
-            fields: [
-                mk("Start", &initial.start, "0800"),
-                mk("End", &initial.end, "1730"),
-                mk(
-                    "Project",
-                    &initial.project,
-                    "type to filter, up/down to pick",
-                ),
-                mk("Comment", &initial.comment, "optional"),
-            ],
+            fields: build_fields(&theme, &initial),
             focus: 0,
             id: initial.id,
             projects,
             picker_idx: 0,
+            theme,
         };
         f.set_focus(0);
         f
+    }
+
+    /// Repaint the overlay in the application's theme. Chained straight onto
+    /// [`EntryForm::new`], so the inputs still hold exactly their initial text and
+    /// rebuilding them loses nothing.
+    pub fn with_theme(mut self, t: &Theme) -> Self {
+        let data = self.data();
+        self.theme = t.clone();
+        self.fields = build_fields(&self.theme, &data);
+        self.set_focus(self.focus);
+        self
     }
 
     fn set_focus(&mut self, i: usize) {
@@ -134,17 +164,24 @@ impl EntryForm {
 
 impl Component for EntryForm {
     fn view(&mut self, f: &mut Frame, area: Rect) {
+        let (muted, text, negative, bg_selected) = (
+            self.theme.muted,
+            self.theme.text,
+            self.theme.negative,
+            self.theme.bg_selected,
+        );
         let r = centered(area, 64, 16);
         f.render_widget(Clear, r);
-        let outer = Block::default()
-            .borders(BorderSides::ALL)
-            .border_type(BorderType::Rounded)
-            .title(if self.id.is_some() {
-                " Edit entry "
-            } else {
-                " New entry "
-            })
-            .title_bottom(" Tab next · Ctrl+S save · Esc cancel ");
+        let title = if self.id.is_some() {
+            "Edit entry"
+        } else {
+            "New entry"
+        };
+        // The house panel: `theme.border` type, `muted` border, bold `text` title.
+        let outer = block(&self.theme, Some(title)).title_bottom(Span::styled(
+            " Tab next · Ctrl+S save · Esc cancel ",
+            Style::default().fg(muted),
+        ));
         let inner = outer.inner(r);
         f.render_widget(outer, r);
         let [row1, proj, picker, comment, _gap, footer] = Layout::vertical([
@@ -166,17 +203,23 @@ impl Component for EntryForm {
         let spans: Vec<Span> = if m.is_empty() {
             vec![Span::styled(
                 " no match — will be created as a new project ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(muted),
             )]
         } else {
             m.iter()
                 .enumerate()
                 .take(6)
                 .flat_map(|(i, p)| {
+                    // `bg_selected` is the role the day and month tables already use
+                    // for "the row under the cursor", so the picker highlight reads as
+                    // the same kind of selection; bold lifts it off a subtle background.
                     let style = if i == self.picker_idx && self.focus == PROJECT {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                        Style::default()
+                            .fg(text)
+                            .bg(bg_selected)
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(muted)
                     };
                     [Span::styled(format!(" {p} "), style), Span::raw(" ")]
                 })
@@ -186,9 +229,9 @@ impl Component for EntryForm {
 
         self.fields[LAST].view(f, comment);
 
-        let (text, is_err) = self.footer();
-        let style = Style::default().fg(if is_err { Color::Red } else { Color::DarkGray });
-        f.render_widget(Paragraph::new(Span::styled(text, style)), footer);
+        let (line, is_err) = self.footer();
+        let style = Style::default().fg(if is_err { negative } else { muted });
+        f.render_widget(Paragraph::new(Span::styled(line, style)), footer);
     }
 
     fn query<'a>(&'a self, attr: Attribute) -> Option<QueryResult<'a>> {
@@ -382,6 +425,68 @@ mod tests {
         assert!(contains(&rows, "09:00"));
         assert!(contains(&rows, "12:30"));
         assert!(contains(&rows, "net +03:12"));
+    }
+
+    /// Every cell the overlay paints, so a test can assert which colors it used.
+    fn cells(f: &mut EntryForm) -> Vec<tuirealm::ratatui::buffer::Cell> {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|fr| {
+            let area = fr.area();
+            f.view(fr, area)
+        })
+        .unwrap();
+        term.backend().buffer().content().to_vec()
+    }
+
+    #[test]
+    fn paints_only_with_theme_roles() {
+        use std::collections::HashSet;
+        use tuirealm::props::Color;
+
+        // Unmistakable stand-ins, so a role that is not actually consulted cannot pass.
+        let mut th = Theme::dark();
+        th.muted = Color::Rgb(1, 1, 1);
+        th.text = Color::Rgb(2, 2, 2);
+        th.negative = Color::Rgb(3, 3, 3);
+        th.bg_selected = Color::Rgb(4, 4, 4);
+
+        let mut f = EntryForm::new(FormData::default(), vec!["Alpha".into()]).with_theme(&th);
+        f.set_focus(PROJECT);
+        f.attr(
+            Attribute::Text,
+            AttrValue::String("end: must differ from start".into()),
+        );
+        f.attr(Attribute::Custom(ERROR_FLAG), AttrValue::Flag(true));
+
+        let painted = cells(&mut f);
+        let fgs: HashSet<Color> = painted.iter().map(|c| c.fg).collect();
+        let bgs: HashSet<Color> = painted.iter().map(|c| c.bg).collect();
+
+        assert!(fgs.contains(&th.muted), "border, hints and blurred fields");
+        assert!(fgs.contains(&th.text), "title and the focused field");
+        assert!(fgs.contains(&th.negative), "the footer error");
+        assert!(bgs.contains(&th.bg_selected), "the picker highlight");
+
+        // Nothing is painted with a hardcoded color any more.
+        for raw in [
+            Color::Red,
+            Color::Cyan,
+            Color::Black,
+            Color::DarkGray,
+            Color::White,
+        ] {
+            assert!(
+                !fgs.contains(&raw) && !bgs.contains(&raw),
+                "raw {raw:?} left in the overlay"
+            );
+        }
+
+        // A clean footer is muted, not red.
+        f.attr(Attribute::Custom(ERROR_FLAG), AttrValue::Flag(false));
+        let fgs: HashSet<Color> = cells(&mut f).iter().map(|c| c.fg).collect();
+        assert!(!fgs.contains(&th.negative));
     }
 
     #[test]
