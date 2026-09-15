@@ -64,10 +64,12 @@ pub enum Command {
     /// Show or change core settings (start date, initial balance, daily target, vacation days)
     Config {
         /// New start date for the balance (YYYY-MM-DD, today, yesterday, or an offset)
-        #[arg(long, value_name = "DATE")]
+        // A negative day offset (`--start -1`) is a value, not another flag.
+        #[arg(long, value_name = "DATE", allow_hyphen_values = true)]
         start: Option<String>,
         /// New carried-over balance at the start date
-        #[arg(long, value_name = "±HH:MM")]
+        // Likewise a negative carried-over balance (`--balance -2:30`).
+        #[arg(long, value_name = "±HH:MM", allow_hyphen_values = true)]
         balance: Option<String>,
         /// New daily target
         #[arg(long, value_name = "HH:MM")]

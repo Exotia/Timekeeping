@@ -202,3 +202,24 @@ fn config_start_today_moves_the_balance() {
         .success()
         .stdout(predicate::str::contains("balance +12:30"));
 }
+
+#[test]
+fn config_accepts_negative_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // A negative balance and a date offset into the past both start with `-`, which
+    // clap would otherwise read as the start of another flag.
+    tk(home)
+        .args(["config", "--start", "-1", "--balance", "-2:30"])
+        .assert()
+        .success();
+    let yesterday = (chrono::Local::now().date_naive() - chrono::Days::new(1)).to_string();
+    tk(home)
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "start_date       {yesterday}"
+        )))
+        .stdout(predicate::str::contains("initial_balance  -02:30"));
+}
