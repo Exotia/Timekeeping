@@ -140,3 +140,65 @@ fn bad_config_exits_2() {
         .code(2)
         .stderr(predicate::str::contains("daily_target_minutes"));
 }
+
+#[test]
+fn config_shows_and_sets_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // No flags: the current table, from the freshly written default file.
+    tk(home)
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("daily_target     07:48"));
+    tk(home)
+        .args([
+            "config",
+            "--start",
+            "2026-09-15",
+            "--balance",
+            "+12:30",
+            "--target",
+            "8:00",
+            "--vacation",
+            "28",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated config:"))
+        .stdout(predicate::str::contains("Restart tk to apply in the TUI."));
+    let shown = tk(home).arg("config").assert().success();
+    let out = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    assert!(out.contains("start_date       2026-09-15"), "{out}");
+    assert!(out.contains("initial_balance  +12:30"), "{out}");
+    assert!(out.contains("daily_target     08:00"), "{out}");
+    assert!(out.contains("vacation_days    28"), "{out}");
+    // An invalid value is refused by name, and the file keeps the old value.
+    tk(home)
+        .args(["config", "--target", "0:00"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("daily_target_minutes"));
+    tk(home)
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("daily_target     08:00"));
+}
+
+#[test]
+fn config_start_today_moves_the_balance() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // With the start date on today and nothing worked yet, the balance is exactly
+    // the carried-over one.
+    tk(home)
+        .args(["config", "--start", "today", "--balance", "+12:30"])
+        .assert()
+        .success();
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("balance +12:30"));
+}

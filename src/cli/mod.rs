@@ -61,6 +61,21 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<ProjectAction>,
     },
+    /// Show or change core settings (start date, initial balance, daily target, vacation days)
+    Config {
+        /// New start date for the balance (YYYY-MM-DD, today, yesterday, or an offset)
+        #[arg(long, value_name = "DATE")]
+        start: Option<String>,
+        /// New carried-over balance at the start date
+        #[arg(long, value_name = "±HH:MM")]
+        balance: Option<String>,
+        /// New daily target
+        #[arg(long, value_name = "HH:MM")]
+        target: Option<String>,
+        /// New yearly vacation allowance in days
+        #[arg(long, value_name = "DAYS")]
+        vacation: Option<u32>,
+    },
     /// Copy the database into backups/
     Backup,
     /// Export entries as CSV or JSON

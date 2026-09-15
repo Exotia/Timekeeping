@@ -90,6 +90,19 @@ deduct_minutes = 48
 | `[[break_tiers]]` | 180→18, 360→48 | Statutory break table. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
 | `[theme_overrides]` | empty | Per-role color overrides. |
 
+**Changing your settings.** The four settings you are most likely to revisit —
+`start_date`, `initial_balance_minutes`, `daily_target_minutes` and
+`vacation_days_per_year` — can be changed without opening an editor, with
+`tk config`. It rewrites `config.toml` in place, keeping your comments, key
+order and break tiers, and refuses a value the config file itself would reject,
+naming the offending field and exiting with status 1.
+
+```bash
+tk config                                   # show the current values
+tk config --target 8:00 --vacation 28       # change two of them
+tk config --start 2026-01-01 --balance -2:30
+```
+
 **How break tiers apply.** For a day's gross time, `tk` picks the tier with the
 largest `after_minutes` that is *strictly below* the gross, and subtracts that
 tier's `deduct_minutes`. With the defaults, 3:00 gross loses nothing, 3:01
@@ -141,6 +154,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk projects archive NAME` | | Hide a project from the picker without deleting its entries. |
 | `tk projects unarchive NAME` | | Undo an archive. |
 | `tk projects rename OLD NEW` | | Rename a project. |
+| `tk config` | `--start DATE`<br>`--balance ±HH:MM`<br>`--target HH:MM`<br>`--vacation DAYS` | Without flags, print the four core settings. With any flag, change them in `config.toml` — comments and break tiers are kept — and print the new table. A running TUI keeps the old values until it is restarted. |
 | `tk backup` | | Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db`. |
 | `tk export` | `--format csv\|json` (default `csv`)<br>`--from DATE`<br>`--to DATE`<br>`-o, --output PATH` | Export entries. Defaults to `start_date` … today, printed to stdout unless `--output` is given. |
 

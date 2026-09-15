@@ -4,6 +4,7 @@ use anyhow::{Context as _, anyhow, bail};
 use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 
 use super::{Command, Ctx, ProjectAction};
+use crate::config::{Config, ConfigPatch};
 use crate::core::{
     DayKind, Minutes, TodayCtx, clock_out_end, day_stats, parse_date, parse_time_range,
     provisional_net_with, running_balance, running_minutes,
@@ -213,6 +214,42 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 writeln!(out, "Renamed {old} → {new}")?;
             }
         },
+        Command::Config {
+            start,
+            balance,
+            target,
+            vacation,
+        } => {
+            let mut patch = ConfigPatch::default();
+            if let Some(s) = &start {
+                patch.start_date = Some(parse_date(s, today)?);
+            }
+            if let Some(b) = &balance {
+                patch.initial_balance_minutes = Some(
+                    b.parse::<Minutes>()
+                        .map_err(|_| anyhow!("--balance '{b}': expected ±HH:MM, e.g. +12:30"))?
+                        .0,
+                );
+            }
+            if let Some(t) = &target {
+                // Greater than zero is checked by `Config::validate`, which names the
+                // field the config file uses, so the message matches a hand-edited file.
+                patch.daily_target_minutes = Some(
+                    t.parse::<Minutes>()
+                        .map_err(|_| anyhow!("--target '{t}': expected HH:MM, e.g. 07:48"))?
+                        .0,
+                );
+            }
+            patch.vacation_days_per_year = vacation;
+            if patch == ConfigPatch::default() {
+                out.write_all(config_table(&ctx.config).as_bytes())?;
+            } else {
+                let cfg = Config::write_updates(&ctx.home, &patch)?;
+                writeln!(out, "Updated config:")?;
+                out.write_all(config_table(&cfg).as_bytes())?;
+                writeln!(out, "Restart tk to apply in the TUI.")?;
+            }
+        }
         Command::Backup => {
             let dir = ctx.home.join("backups");
             std::fs::create_dir_all(&dir)?;
@@ -282,6 +319,22 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The four settings `tk config` shows, one per line, label padded to 16.
+fn config_table(c: &Config) -> String {
+    [
+        ("start_date", c.start_date.to_string()),
+        (
+            "initial_balance",
+            Minutes(c.initial_balance_minutes).to_string(),
+        ),
+        ("daily_target", Minutes(c.daily_target_minutes).hhmm()),
+        ("vacation_days", c.vacation_days_per_year.to_string()),
+    ]
+    .iter()
+    .map(|(k, v)| format!("{k:<16} {v}\n"))
+    .collect()
 }
 
 fn csv_quote(s: &str) -> String {
