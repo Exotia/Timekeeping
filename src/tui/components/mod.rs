@@ -2,8 +2,10 @@
 //! into `Msg`s and to own focus. All drawing is done by `Model::draw`.
 
 pub mod bridge;
+pub mod confirm;
 pub mod day;
 pub mod form;
+pub mod help;
 pub mod month;
 pub mod stats;
 

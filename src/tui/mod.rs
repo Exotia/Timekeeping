@@ -63,6 +63,16 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         Box::new(components::month::MonthScreen::default()),
         vec![],
     )?;
+    app.mount(
+        Id::Confirm,
+        Box::new(components::confirm::ConfirmDialog::default()),
+        vec![],
+    )?;
+    app.mount(
+        Id::Help,
+        Box::new(components::help::HelpOverlay::default()),
+        vec![],
+    )?;
     app.active(&Id::Month)?;
 
     // Restore the terminal on panic so the shell is usable.

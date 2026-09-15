@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Days, Local, NaiveDate, NaiveTime};
+use chrono::{Datelike, Days, Local, NaiveDate, NaiveTime, Timelike};
 use tuirealm::application::Application;
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Layout};
@@ -60,6 +60,30 @@ impl Model {
         });
     }
 
+    pub fn focus(&mut self, id: Id) {
+        let _ = self.app.active(&id);
+    }
+
+    pub fn focus_screen(&mut self) {
+        let id = match self.screen {
+            Screen::Month => Id::Month,
+            Screen::Day => Id::Day,
+            Screen::Stats => Id::Stats,
+        };
+        self.focus(id);
+    }
+
+    fn open_confirm(&mut self, c: Confirm) {
+        self.confirm = Some(c);
+        self.focus(Id::Confirm);
+    }
+
+    fn close_overlay(&mut self) {
+        self.confirm = None;
+        self.help = false;
+        self.focus_screen();
+    }
+
     pub fn update(&mut self, msg: Msg) {
         self.redraw = true;
         match msg {
@@ -107,15 +131,81 @@ impl Model {
                 self.selected = self.today;
                 self.load_month();
             }
-            Msg::ToggleHelp => self.help = !self.help,
             Msg::Back => {
-                if self.help {
-                    self.help = false;
-                } else if self.confirm.is_some() {
-                    self.confirm = None;
+                if self.help || self.confirm.is_some() {
+                    self.close_overlay();
                 } else {
                     self.screen = Screen::Month;
                     let _ = self.app.active(&Id::Month);
+                }
+            }
+            Msg::ClockIn => {
+                if !crate::core::is_working_day(self.today) {
+                    self.set_status("Cannot clock in on a weekend", true);
+                    return;
+                }
+                if self.month.as_ref().is_some_and(|m| m.session.is_some()) {
+                    self.open_confirm(Confirm::ClockInReplace);
+                    return;
+                }
+                self.worker.send(StoreCmd::ClockIn(
+                    self.today,
+                    self.now.with_second(0).unwrap(),
+                ));
+            }
+            Msg::ClockOut => {
+                if !self.month.as_ref().is_some_and(|m| m.session.is_some()) {
+                    self.set_status("Not clocked in", true);
+                    return;
+                }
+                self.worker.send(StoreCmd::ClockOut {
+                    project: None,
+                    comment: String::new(),
+                });
+            }
+            Msg::SetKind(kind) => {
+                let has_entries = self
+                    .month
+                    .as_ref()
+                    .and_then(|m| m.days.iter().find(|d| d.date == self.selected))
+                    .is_some_and(|d| !d.entries.is_empty());
+                if has_entries && kind != crate::core::DayKind::Work {
+                    self.set_status("Day has entries; delete them first", true);
+                    return;
+                }
+                if !crate::core::is_working_day(self.selected) && kind != crate::core::DayKind::Work
+                {
+                    self.set_status("Weekends need no day type", true);
+                    return;
+                }
+                self.open_confirm(Confirm::SetKind(self.selected, kind));
+            }
+            Msg::AskConfirm(c) => self.open_confirm(c),
+            Msg::ConfirmNo => self.close_overlay(),
+            Msg::ConfirmYes => {
+                let Some(c) = self.confirm.take() else {
+                    return;
+                };
+                self.close_overlay();
+                match c {
+                    Confirm::DeleteEntry(id) => self.worker.send(StoreCmd::DeleteEntry(id)),
+                    Confirm::SetKind(d, k) => self.worker.send(StoreCmd::SetKind(d, k)),
+                    Confirm::ClockInReplace => {
+                        // Replacing discards the running session rather than recording it.
+                        self.worker.send(StoreCmd::ClearSession);
+                        self.worker.send(StoreCmd::ClockIn(
+                            self.today,
+                            self.now.with_second(0).unwrap(),
+                        ));
+                    }
+                }
+            }
+            Msg::ToggleHelp => {
+                self.help = !self.help;
+                if self.help {
+                    self.focus(Id::Help)
+                } else {
+                    self.focus_screen()
                 }
             }
             // Filled in by Tasks 15–18.
@@ -283,4 +373,181 @@ pub fn month_name(m: u32) -> &'static str {
         "November",
         "December",
     ][(m as usize).saturating_sub(1).min(11)]
+}
+
+/// Test-only model/data constructors, exposed (not `cfg(test)`-gated) so the
+/// integration tests in `tests/` can build a `Model` without a terminal.
+#[doc(hidden)]
+pub mod testing {
+    use super::*;
+    use crate::tui::msg::StoreCmd;
+    use std::sync::mpsc::{Receiver, channel};
+
+    pub fn model(today: NaiveDate) -> (Model, Receiver<StoreCmd>) {
+        let (tx, rx) = channel();
+        let app: Application<Id, Msg, UserEvent> =
+            Application::init(tuirealm::listener::EventListenerCfg::default());
+        let m = Model {
+            app,
+            terminal: None,
+            theme: Theme::dark(),
+            rules: Rules {
+                daily_target: crate::core::Minutes(468),
+                tiers: crate::core::default_tiers(),
+                start_date: today,
+                initial_balance: crate::core::Minutes::ZERO,
+            },
+            cal: HolidayCalendar::default(),
+            vacation_allowance: 30,
+            screen: Screen::Month,
+            selected: today,
+            today,
+            now: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            month: None,
+            day: None,
+            stats: None,
+            day_cursor: 0,
+            confirm: None,
+            help: false,
+            status: None,
+            quit: false,
+            redraw: false,
+            worker: Worker { tx },
+            size: (100, 30),
+        };
+        (m, rx)
+    }
+
+    pub fn month_data(
+        today: NaiveDate,
+        days: Vec<crate::core::Day>,
+        session: Option<crate::store::Session>,
+    ) -> MonthData {
+        MonthData {
+            year: today.year(),
+            month: today.month(),
+            days,
+            balance_before: Default::default(),
+            balance_total: Default::default(),
+            session,
+            projects: vec![],
+            vacation_used_this_year: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use crate::core::{Day, DayKind};
+    use crate::tui::msg::StoreCmd;
+    use chrono::NaiveDate;
+
+    fn d(y: i32, m: u32, dd: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, dd).unwrap()
+    }
+
+    #[test]
+    fn set_kind_asks_confirm_then_sends_cmd() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.month = Some(month_data(
+            today,
+            vec![Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![],
+            }],
+            None,
+        ));
+        m.update(Msg::SetKind(DayKind::Vacation));
+        assert_eq!(m.confirm, Some(Confirm::SetKind(today, DayKind::Vacation)));
+        m.update(Msg::ConfirmYes);
+        assert_eq!(m.confirm, None);
+        assert!(
+            matches!(rx.try_recv().unwrap(), StoreCmd::SetKind(dt, DayKind::Vacation) if dt == today)
+        );
+    }
+
+    #[test]
+    fn set_kind_on_day_with_entries_is_refused() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let e = crate::core::Entry {
+            id: 1,
+            date: today,
+            start: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            end: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            project: "A".into(),
+            comment: "".into(),
+        };
+        m.month = Some(month_data(
+            today,
+            vec![Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![e],
+            }],
+            None,
+        ));
+        m.update(Msg::SetKind(DayKind::Sick));
+        assert!(m.confirm.is_none());
+        assert!(m.status.as_ref().unwrap().1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn clock_in_out_flow() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.month = Some(month_data(today, vec![], None));
+        m.update(Msg::ClockIn);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockIn(dt, _) if dt == today));
+        m.update(Msg::ClockOut);
+        assert!(m.status.as_ref().unwrap().1); // not clocked in → error status
+        let sess = crate::store::Session {
+            date: today,
+            start: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            project: None,
+        };
+        m.month = Some(month_data(today, vec![], Some(sess)));
+        m.update(Msg::ClockIn);
+        assert_eq!(m.confirm, Some(Confirm::ClockInReplace));
+        m.update(Msg::ConfirmNo);
+        assert!(m.confirm.is_none());
+        m.update(Msg::ClockOut);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockOut { .. }));
+    }
+
+    #[test]
+    fn clock_in_on_weekend_is_refused() {
+        let sat = d(2026, 9, 19);
+        let (mut m, rx) = model(sat);
+        m.month = Some(month_data(sat, vec![], None));
+        m.update(Msg::ClockIn);
+        assert!(rx.try_recv().is_err());
+        assert!(m.status.as_ref().unwrap().1);
+    }
+
+    #[test]
+    fn navigation_and_month_change() {
+        let today = d(2026, 1, 31);
+        let (mut m, rx) = model(today);
+        m.update(Msg::SelectMonth(1));
+        assert_eq!(m.selected, d(2026, 2, 28));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::LoadMonth {
+                year: 2026,
+                month: 2
+            }
+        ));
+        m.update(Msg::SelectMonth(-2));
+        assert_eq!(m.selected, d(2025, 12, 28));
+        m.update(Msg::GoToday);
+        assert_eq!(m.selected, today);
+        m.update(Msg::SelectDay(1));
+        assert_eq!(m.selected, d(2026, 2, 1));
+    }
 }
