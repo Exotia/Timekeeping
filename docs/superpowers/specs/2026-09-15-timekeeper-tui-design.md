@@ -241,6 +241,7 @@ daily_target_minutes = 468         # 7:48
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light"
+extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
 after_minutes = 180
@@ -249,8 +250,6 @@ deduct_minutes = 18
 [[break_tiers]]
 after_minutes = 360
 deduct_minutes = 48
-
-extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [theme_overrides]                  # optional; any role may be set to "#rrggbb" or a named color
 # positive = "#a6e3a1"
