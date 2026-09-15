@@ -42,11 +42,26 @@ pub fn parse_time(s: &str) -> Result<NaiveTime, CoreError> {
     NaiveTime::from_hms_opt(h, m, 0).ok_or_else(err)
 }
 
+/// The one rule every entry range must obey: the two ends must differ.
+///
+/// `Entry::interval` reads `end <= start` as crossing midnight and adds a day, so an
+/// equal pair would silently become a 24-hour entry. `end < start` is a genuine
+/// crossing and stays valid. This is the single check shared by `parse_time_range`,
+/// the TUI entry form and the store's write paths.
+pub fn check_range(start: NaiveTime, end: NaiveTime) -> Result<(), CoreError> {
+    if minutes_of(start) == minutes_of(end) {
+        return Err(CoreError::InvalidRange);
+    }
+    Ok(())
+}
+
 pub fn parse_time_range(s: &str) -> Result<(NaiveTime, NaiveTime), CoreError> {
     let (a, b) = s
         .split_once('-')
         .ok_or_else(|| CoreError::InvalidTime(s.to_string()))?;
-    Ok((parse_time(a)?, parse_time(b)?))
+    let (start, end) = (parse_time(a)?, parse_time(b)?);
+    check_range(start, end)?;
+    Ok((start, end))
 }
 
 pub fn parse_date(s: &str, today: NaiveDate) -> Result<NaiveDate, CoreError> {
@@ -150,5 +165,21 @@ mod tests {
             (t(9, 0), t(17, 30))
         );
         assert!(parse_time_range("0900").is_err());
+        // An earlier end crosses midnight and stays valid.
+        assert_eq!(parse_time_range("2200-0200").unwrap(), (t(22, 0), t(2, 0)));
+    }
+
+    #[test]
+    fn a_range_with_equal_ends_is_rejected() {
+        // `Entry::interval` would read it as a 24-hour shift.
+        assert_eq!(
+            parse_time_range("0900-0900"),
+            Err(CoreError::InvalidRange),
+            "0900-0900 must not become a 24-hour entry"
+        );
+        assert_eq!(parse_time_range("9-9:00"), Err(CoreError::InvalidRange));
+        assert_eq!(check_range(t(9, 0), t(9, 0)), Err(CoreError::InvalidRange));
+        assert!(check_range(t(22, 0), t(2, 0)).is_ok());
+        assert!(check_range(t(9, 0), t(9, 1)).is_ok());
     }
 }

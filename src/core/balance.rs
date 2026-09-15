@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use super::{
     BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, deduction, minutes_of,
@@ -121,7 +121,26 @@ pub fn check_overlap(
     Ok(())
 }
 
+/// Minutes elapsed in a running session, as whole date-times.
+///
+/// Taking both ends as `NaiveDateTime` is what makes a session that started yesterday
+/// come out right: a bare `NaiveTime` difference wraps at midnight and can express at
+/// most 24 hours.
+pub fn running_minutes(session_start: NaiveDateTime, now: NaiveDateTime) -> Minutes {
+    Minutes((now - session_start).num_minutes().max(0) as i32)
+}
+
+/// Net for today if a session of `running` minutes were closed right now.
+pub fn provisional_net_with(entries: &[Entry], running: Minutes, rules: &Rules) -> Minutes {
+    let gross = entries.iter().map(Entry::duration).sum::<Minutes>() + running;
+    Minutes((gross - deduction(gross, &rules.tiers)).0.max(0))
+}
+
 /// Net for today if the running clock-in were closed right now.
+///
+/// Same-day form kept for callers that only hold clock times; prefer
+/// [`provisional_net_with`] together with [`running_minutes`], which also handles a
+/// session that started on an earlier date.
 pub fn provisional_net(
     entries: &[Entry],
     running_since: NaiveTime,
@@ -134,8 +153,7 @@ pub fn provisional_net(
     } else {
         Minutes(e - s)
     };
-    let gross = entries.iter().map(Entry::duration).sum::<Minutes>() + running;
-    Minutes((gross - deduction(gross, &rules.tiers)).0.max(0))
+    provisional_net_with(entries, running, rules)
 }
 
 #[cfg(test)]
@@ -389,6 +407,30 @@ mod tests {
         assert_eq!(
             provisional_net(&ex, t(13, 0), t(15, 30), &rules()),
             Minutes(342)
+        );
+    }
+
+    #[test]
+    fn running_minutes_spans_midnight() {
+        let start = NaiveDateTime::new(d(2026, 9, 14), t(23, 0));
+        let now = NaiveDateTime::new(d(2026, 9, 15), t(1, 0));
+        assert_eq!(running_minutes(start, now), Minutes(120));
+        // A clock still on its first minute, and a clock skew backwards, both clamp at 0.
+        assert_eq!(running_minutes(start, start), Minutes::ZERO);
+        assert_eq!(
+            running_minutes(start, NaiveDateTime::new(d(2026, 9, 14), t(22, 0))),
+            Minutes::ZERO
+        );
+        // More than a day is expressible, unlike a bare `NaiveTime` difference.
+        assert_eq!(
+            running_minutes(start, NaiveDateTime::new(d(2026, 9, 16), t(0, 0))),
+            Minutes(1500)
+        );
+        // …and it feeds the provisional net unchanged.
+        let ex = vec![entry(1, d(2026, 9, 14), t(8, 0), t(12, 0))]; // 240
+        assert_eq!(
+            provisional_net_with(&ex, running_minutes(start, now), &rules()),
+            Minutes(240 + 120 - 18) // 6:00 gross sits on the first tier, not past it
         );
     }
 }

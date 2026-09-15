@@ -22,7 +22,7 @@ impl Store {
                 |r| {
                     Ok(Session {
                         date: parse_date(&r.get::<_, String>(0)?)?,
-                        start: time_from_min(r.get(1)?),
+                        start: time_from_min(r.get(1)?)?,
                         project: r.get(2)?,
                     })
                 },

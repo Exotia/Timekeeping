@@ -2,7 +2,7 @@ use chrono::{NaiveDate, NaiveTime};
 use rusqlite::params;
 
 use super::{Store, StoreError, StoreResult, date_str, parse_date, time_from_min};
-use crate::core::{DayKind, Entry, check_overlap, minutes_of};
+use crate::core::{DayKind, Entry, check_overlap, check_range, minutes_of};
 
 const SELECT: &str = "SELECT e.id, e.date, e.start_min, e.end_min, p.name, e.comment
                       FROM entries e JOIN projects p ON p.id = e.project_id";
@@ -11,8 +11,8 @@ fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
     Ok(Entry {
         id: r.get(0)?,
         date: parse_date(&r.get::<_, String>(1)?)?,
-        start: time_from_min(r.get(2)?),
-        end: time_from_min(r.get(3)?),
+        start: time_from_min(r.get(2)?)?,
+        end: time_from_min(r.get(3)?)?,
         project: r.get(4)?,
         comment: r.get(5)?,
     })
@@ -67,6 +67,8 @@ impl Store {
     ) -> StoreResult<Entry> {
         self.in_write_tx(|| {
             self.ensure_work_day(date)?;
+            // No write path may store a zero-length entry: it would read back as 24 hours.
+            check_range(start, end)?;
             check_overlap(&self.entries_on(date)?, start, end, None)?;
             let p = self.get_or_create_project(project)?;
             self.conn().execute(
@@ -87,6 +89,7 @@ impl Store {
     ) -> StoreResult<Entry> {
         self.in_write_tx(|| {
             let existing = self.entry(id)?;
+            check_range(start, end)?;
             check_overlap(&self.entries_on(existing.date)?, start, end, Some(id))?;
             let p = self.get_or_create_project(project)?;
             self.conn().execute(

@@ -54,24 +54,26 @@ impl Store {
     }
 
     fn init(conn: Connection) -> StoreResult<Store> {
-        conn.execute_batch(SCHEMA)?;
-        let store = Store { conn };
-        match store.schema_version()? {
-            1 => Ok(store),
-            v => Err(StoreError::Migration(format!(
-                "unsupported schema version {v}"
-            ))),
-        }
-    }
-
-    pub fn schema_version(&self) -> StoreResult<i64> {
-        let v: String = self.conn.query_row(
-            "SELECT value FROM meta WHERE key = 'schema_version'",
+        // An existing database states its version before anything is written to it, so a
+        // schema from a newer `tk` is refused with its tables still intact rather than
+        // having v1 DDL applied on top of it.
+        let has_meta: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
             [],
             |r| r.get(0),
         )?;
-        v.parse()
-            .map_err(|_| StoreError::Migration(format!("bad schema_version {v}")))
+        if has_meta > 0 {
+            check_version(schema_version_of(&conn)?)?;
+        }
+        // One transaction: a failure part-way through leaves no half-created schema.
+        conn.execute_batch(&format!("BEGIN;\n{SCHEMA}\nCOMMIT;"))?;
+        let store = Store { conn };
+        check_version(store.schema_version()?)?;
+        Ok(store)
+    }
+
+    pub fn schema_version(&self) -> StoreResult<i64> {
+        schema_version_of(&self.conn)
     }
 
     pub fn backup_to(&self, path: &Path) -> StoreResult<()> {
@@ -103,6 +105,29 @@ impl Store {
     }
 }
 
+/// The only schema version this build understands.
+const SCHEMA_VERSION: i64 = 1;
+
+fn check_version(v: i64) -> StoreResult<()> {
+    if v == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(StoreError::Migration(format!(
+            "unsupported schema version {v}"
+        )))
+    }
+}
+
+fn schema_version_of(conn: &Connection) -> StoreResult<i64> {
+    let v: String = conn.query_row(
+        "SELECT value FROM meta WHERE key = 'schema_version'",
+        [],
+        |r| r.get(0),
+    )?;
+    v.parse()
+        .map_err(|_| StoreError::Migration(format!("bad schema_version {v}")))
+}
+
 pub(crate) fn date_str(d: chrono::NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
@@ -113,9 +138,25 @@ pub(crate) fn parse_date(s: &str) -> rusqlite::Result<chrono::NaiveDate> {
     })
 }
 
-pub(crate) fn time_from_min(m: i64) -> chrono::NaiveTime {
+/// A stored minute-of-day back into a `NaiveTime`. A row outside 0..1440 is a corrupt
+/// database, not a panic: it surfaces as a conversion failure on that query.
+pub(crate) fn time_from_min(m: i64) -> rusqlite::Result<chrono::NaiveTime> {
+    if !(0..1440).contains(&m) {
+        return Err(bad_minute(m));
+    }
     chrono::NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0)
-        .expect("stored minutes valid")
+        .ok_or_else(|| bad_minute(m))
+}
+
+fn bad_minute(m: i64) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Integer,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid stored minute-of-day {m}"),
+        )),
+    )
 }
 
 #[cfg(test)]
@@ -140,6 +181,83 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap(); // idempotent
         assert_eq!(s.schema_version().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_newer_schema_is_refused_without_touching_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tk.db");
+        // A database written by a future `tk`: it has `meta`, but nothing else we know.
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '2');
+                 CREATE TABLE future_stuff (id INTEGER PRIMARY KEY);",
+            )
+            .unwrap();
+        }
+        let err = Store::open(&path)
+            .err()
+            .expect("a newer schema must not open");
+        match err {
+            StoreError::Migration(m) => assert!(m.contains('2'), "{m}"),
+            other => panic!("expected a migration error, got {other:?}"),
+        }
+        // None of our v1 DDL ran, and the version it states is untouched.
+        let c = Connection::open(&path).unwrap();
+        let tables: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(tables, vec!["future_stuff".to_string(), "meta".into()]);
+        let v: String = c
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "2");
+    }
+
+    #[test]
+    fn entries_with_equal_start_and_end_are_rejected() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 14);
+        // A zero-length range reads back as a 24-hour entry, so no write path may store it.
+        assert!(matches!(
+            s.add_entry(day, t(9, 0), t(9, 0), "Alpha", ""),
+            Err(StoreError::Core(CoreError::InvalidRange))
+        ));
+        assert!(s.entries_on(day).unwrap().is_empty());
+        let e = s.add_entry(day, t(9, 0), t(12, 0), "Alpha", "").unwrap();
+        assert!(matches!(
+            s.update_entry(e.id, t(9, 0), t(9, 0), "Alpha", ""),
+            Err(StoreError::Core(CoreError::InvalidRange))
+        ));
+        assert_eq!(s.entries_on(day).unwrap()[0].end, t(12, 0));
+        // Crossing midnight is still allowed.
+        s.add_entry(day, t(22, 0), t(2, 0), "Alpha", "").unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_stored_minute_is_a_query_error_not_a_panic() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 14);
+        s.add_entry(day, t(9, 0), t(12, 0), "Alpha", "").unwrap();
+        s.conn()
+            .execute("UPDATE entries SET end_min = 5000", [])
+            .unwrap();
+        assert!(matches!(
+            s.entries_on(day),
+            Err(StoreError::Sqlite(
+                rusqlite::Error::FromSqlConversionFailure(..)
+            ))
+        ));
     }
 
     #[test]

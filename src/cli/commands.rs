@@ -6,7 +6,7 @@ use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 use super::{Command, Ctx, ProjectAction};
 use crate::core::{
     DayKind, Minutes, TodayCtx, clock_out_end, day_stats, parse_date, parse_time_range,
-    provisional_net, running_balance,
+    provisional_net_with, running_balance, running_minutes,
 };
 
 pub fn now_local() -> NaiveDateTime {
@@ -33,8 +33,10 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
     let entries = ctx.store.entries_on(today)?;
     Ok(match session {
         Some(s) => {
-            let running = Minutes(((now.time() - s.start).num_minutes()).max(0) as i32);
-            let net = provisional_net(&entries, s.start, now.time(), &rules);
+            // The session carries its own date, so a clock-in from yesterday keeps
+            // counting instead of wrapping back to 00:00 at midnight.
+            let running = running_minutes(NaiveDateTime::new(s.date, s.start), now);
+            let net = provisional_net_with(&entries, running, &rules);
             format!(
                 "⏱ {} (in {}) · today {} · balance {}",
                 running.hhmm(),
@@ -303,4 +305,51 @@ fn json_quote(s: &str) -> String {
     }
     o.push('"');
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, DEFAULT_TOML};
+    use crate::store::Store;
+    use chrono::NaiveTime;
+
+    fn ctx() -> Ctx {
+        Ctx {
+            home: std::path::PathBuf::from("/nonexistent"),
+            config: Config::from_toml(DEFAULT_TOML).unwrap(),
+            store: Store::open_in_memory().unwrap(),
+        }
+    }
+
+    fn dt(y: i32, m: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {
+        NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+            NaiveTime::from_hms_opt(h, mi, 0).unwrap(),
+        )
+    }
+
+    #[test]
+    fn status_line_keeps_counting_across_midnight() {
+        let c = ctx();
+        // Clocked in yesterday at 23:00, asked at 01:00 the next day: two hours, not zero.
+        c.store
+            .clock_in(
+                NaiveDate::from_ymd_opt(2026, 9, 14).unwrap(),
+                NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            )
+            .unwrap();
+        let line = status_line(&c, dt(2026, 9, 15, 1, 0)).unwrap();
+        assert!(line.starts_with("⏱ 02:00 (in 23:00)"), "{line}");
+        assert!(line.contains("today +02:00"), "{line}");
+        assert!(line.contains("balance"), "{line}");
+    }
+
+    #[test]
+    fn status_line_without_a_session_shows_net_and_balance() {
+        let c = ctx();
+        let line = status_line(&c, dt(2026, 9, 15, 10, 0)).unwrap();
+        assert!(line.starts_with("not clocked in · today"), "{line}");
+        assert!(line.contains("balance"), "{line}");
+    }
 }

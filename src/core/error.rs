@@ -8,6 +8,6 @@ pub enum CoreError {
     InvalidTime(String),
     #[error("invalid date: {0}")]
     InvalidDate(String),
-    #[error("end must be after start")]
+    #[error("end must differ from start (an earlier end crosses midnight)")]
     InvalidRange,
 }

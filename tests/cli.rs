@@ -43,6 +43,11 @@ fn add_day_and_status_and_export() {
         .failure()
         .stderr(predicate::str::contains("overlap"));
     tk(home)
+        .args(["add", "2026-09-14", "0900-0900", "-p", "Alpha"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("differ"));
+    tk(home)
         .args(["day", "2026-09-15", "vacation", "--to", "2026-09-16"])
         .assert()
         .success()
