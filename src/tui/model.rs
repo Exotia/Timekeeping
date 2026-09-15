@@ -196,8 +196,12 @@ impl Model {
                 };
                 self.close_overlay();
                 match c {
-                    Confirm::DeleteEntry(id) => self.worker.send(StoreCmd::DeleteEntry(id)),
-                    Confirm::SetKind(d, k) => self.worker.send(StoreCmd::SetKind(d, k)),
+                    Confirm::DeleteEntry(id) => {
+                        self.worker.send(StoreCmd::DeleteEntry(id));
+                    }
+                    Confirm::SetKind(d, k) => {
+                        self.worker.send(StoreCmd::SetKind(d, k));
+                    }
                     Confirm::ClockInReplace => {
                         // Replacing discards the running session rather than recording it.
                         self.worker.send(StoreCmd::ClearSession);
