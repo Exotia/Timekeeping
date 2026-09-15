@@ -373,8 +373,8 @@ intended (asks "crosses midnight?"), overlap with existing entry.
 
 ### 9.3 Statistics
 
-Range selector: This month, Last month, Quarter, Year, Custom (two date
-inputs). Body: per-project table with colored bars, hours, share; below,
+Range selector: This month, Last month, Quarter, Year. (A Custom range with
+two date inputs was planned for v1 but deferred to a follow-up release.) Body: per-project table with colored bars, hours, share; below,
 day-kind table: vacation used/remaining, sick, flex, holidays, absences,
 missing days. `Esc` back.
 
