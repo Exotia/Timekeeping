@@ -1,0 +1,12 @@
+//! Component ids mounted in the tui-realm `Application`.
+
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum Id {
+    Bridge,
+    Month,
+    Day,
+    Form,
+    Stats,
+    Confirm,
+    Help,
+}
