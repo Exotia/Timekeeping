@@ -31,18 +31,20 @@ impl Store {
     }
 
     pub fn clock_in(&self, date: NaiveDate, start: NaiveTime) -> StoreResult<()> {
-        if let Some(s) = self.session()? {
-            return Err(StoreError::Constraint(format!(
-                "already clocked in since {} {}",
-                date_str(s.date),
-                s.start.format("%H:%M")
-            )));
-        }
-        self.conn().execute(
-            "INSERT INTO session (id, date, start_min, project_id) VALUES (1, ?1, ?2, NULL)",
-            params![date_str(date), minutes_of(start)],
-        )?;
-        Ok(())
+        self.in_write_tx(|| {
+            if let Some(s) = self.session()? {
+                return Err(StoreError::Constraint(format!(
+                    "already clocked in since {} {}",
+                    date_str(s.date),
+                    s.start.format("%H:%M")
+                )));
+            }
+            self.conn().execute(
+                "INSERT INTO session (id, date, start_min, project_id) VALUES (1, ?1, ?2, NULL)",
+                params![date_str(date), minutes_of(start)],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn clear_session(&self) -> StoreResult<()> {

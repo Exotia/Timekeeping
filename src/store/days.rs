@@ -23,29 +23,31 @@ impl Store {
     }
 
     pub fn set_day_kind(&self, date: NaiveDate, kind: &DayKind) -> StoreResult<()> {
-        let ds = date_str(date);
-        if *kind == DayKind::Work {
-            self.conn()
-                .execute("DELETE FROM days WHERE date = ?1", [ds])?;
-            return Ok(());
-        }
-        let n: i64 =
-            self.conn()
-                .query_row("SELECT COUNT(*) FROM entries WHERE date = ?1", [&ds], |r| {
-                    r.get(0)
-                })?;
-        if n > 0 {
-            return Err(StoreError::Constraint(format!(
-                "{ds} has {n} time entr{}; remove them before changing the day type",
-                if n == 1 { "y" } else { "ies" }
-            )));
-        }
-        self.conn().execute(
-            "INSERT INTO days (date, kind, label) VALUES (?1, ?2, ?3)
-             ON CONFLICT(date) DO UPDATE SET kind = excluded.kind, label = excluded.label",
-            params![ds, kind.as_str(), kind.label()],
-        )?;
-        Ok(())
+        self.in_write_tx(|| {
+            let ds = date_str(date);
+            if *kind == DayKind::Work {
+                self.conn()
+                    .execute("DELETE FROM days WHERE date = ?1", [ds])?;
+                return Ok(());
+            }
+            let n: i64 = self.conn().query_row(
+                "SELECT COUNT(*) FROM entries WHERE date = ?1",
+                [&ds],
+                |r| r.get(0),
+            )?;
+            if n > 0 {
+                return Err(StoreError::Constraint(format!(
+                    "{ds} has {n} time entr{}; remove them before changing the day type",
+                    if n == 1 { "y" } else { "ies" }
+                )));
+            }
+            self.conn().execute(
+                "INSERT INTO days (date, kind, label) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(date) DO UPDATE SET kind = excluded.kind, label = excluded.label",
+                params![ds, kind.as_str(), kind.label()],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn stored_kinds_in(
