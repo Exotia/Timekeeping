@@ -94,6 +94,7 @@ impl Model {
 
     pub fn update(&mut self, msg: Msg) {
         self.redraw = true;
+        let is_day_kind_next = matches!(msg, Msg::DayKindNext);
         match msg {
             Msg::Quit => self.quit = true,
             Msg::Tick => {
@@ -143,8 +144,12 @@ impl Model {
                 if self.help || self.confirm.is_some() {
                     self.close_overlay();
                 } else {
+                    let was_day = self.screen == Screen::Day;
                     self.screen = Screen::Month;
                     let _ = self.app.active(&Id::Month);
+                    if was_day {
+                        self.load_month();
+                    }
                 }
             }
             Msg::ClockIn => {
@@ -233,6 +238,50 @@ impl Model {
                 self.load_stats();
             }
             // Filled in by Tasks 15–18.
+            // --- day editor (Task 15) ---
+            Msg::OpenDay => {
+                self.screen = Screen::Day;
+                self.day = None;
+                self.day_cursor = 0;
+                self.worker.send(StoreCmd::LoadDay(self.selected));
+                self.focus(Id::Day);
+            }
+            Msg::DaySelect(n) => {
+                let len = self.day.as_ref().map(|d| d.day.entries.len()).unwrap_or(0);
+                if len > 0 {
+                    self.day_cursor = (self.day_cursor as i32 + n).rem_euclid(len as i32) as usize;
+                }
+            }
+            Msg::DayDelete => {
+                if let Some(e) = self
+                    .day
+                    .as_ref()
+                    .and_then(|d| d.day.entries.get(self.day_cursor))
+                {
+                    self.open_confirm(Confirm::DeleteEntry(e.id));
+                }
+            }
+            Msg::DayKindNext | Msg::DayKindPrev => {
+                let Some(d) = &self.day else { return };
+                if !d.day.entries.is_empty() {
+                    self.set_status("Day has entries; delete them first", true);
+                    return;
+                }
+                if !crate::core::is_working_day(d.day.date) {
+                    self.set_status("Weekends need no day type", true);
+                    return;
+                }
+                let cur = super::view::day::kind_index(&d.day.kind) as i32;
+                let next = (cur + if is_day_kind_next { 1 } else { -1 }).rem_euclid(6) as usize;
+                let kind = crate::core::DayKind::parse(
+                    super::view::day::KIND_CYCLE[next],
+                    Some("absence"),
+                )
+                .unwrap();
+                self.worker.send(StoreCmd::SetKind(d.day.date, kind));
+            }
+            // --- end day editor (Task 15) ---
+            // Filled in by Tasks 16–18.
             _ => {}
         }
     }
@@ -240,7 +289,10 @@ impl Model {
     fn on_store(&mut self, reply: StoreReply) {
         match reply {
             StoreReply::Month(m) => self.month = Some(m),
-            StoreReply::Day(d) => self.day = Some(d),
+            StoreReply::Day(d) => {
+                self.day_cursor = self.day_cursor.min(d.day.entries.len().saturating_sub(1));
+                self.day = Some(d);
+            }
             StoreReply::Stats(s) => self.stats = Some(s),
             StoreReply::Changed(msg) => {
                 if !msg.is_empty() {
@@ -574,5 +626,69 @@ mod tests {
         assert_eq!(m.selected, today);
         m.update(Msg::SelectDay(1));
         assert_eq!(m.selected, d(2026, 2, 1));
+    }
+
+    #[test]
+    fn open_day_loads_and_focuses() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.update(Msg::OpenDay);
+        assert_eq!(m.screen, Screen::Day);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::LoadDay(dt) if dt == today));
+        m.update(Msg::Back);
+        assert_eq!(m.screen, Screen::Month);
+    }
+
+    #[test]
+    fn day_delete_asks_confirm_for_selected_entry() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        let t = |h| chrono::NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        let e = |id, s, e| crate::core::Entry {
+            id,
+            date: today,
+            start: t(s),
+            end: t(e),
+            project: "A".into(),
+            comment: "".into(),
+        };
+        m.screen = Screen::Day;
+        m.day = Some(crate::tui::msg::DayData {
+            day: Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![e(1, 8, 9), e(2, 10, 11)],
+            },
+            projects: vec![],
+        });
+        m.update(Msg::DaySelect(1));
+        m.update(Msg::DayDelete);
+        assert_eq!(m.confirm, Some(Confirm::DeleteEntry(2)));
+    }
+
+    #[test]
+    fn day_kind_cycle_sends_set_kind() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.screen = Screen::Day;
+        m.day = Some(crate::tui::msg::DayData {
+            day: Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![],
+            },
+            projects: vec![],
+        });
+        m.update(Msg::DayKindNext);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::SetKind(_, DayKind::Vacation)
+        ));
+        m.day.as_mut().unwrap().day.kind = DayKind::Vacation;
+        m.update(Msg::DayKindPrev);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::SetKind(_, DayKind::Work)
+        ));
     }
 }
