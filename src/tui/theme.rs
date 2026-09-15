@@ -98,6 +98,13 @@ impl Theme {
     }
 
     pub fn from_config(cfg: &Config) -> Theme {
+        Self::from_config_with(cfg, supports_truecolor())
+    }
+
+    /// Pure variant of [`Theme::from_config`] that takes the truecolor
+    /// decision as a parameter instead of reading `COLORTERM`, so callers
+    /// (notably tests) don't need to mutate process environment state.
+    pub fn from_config_with(cfg: &Config, truecolor: bool) -> Theme {
         let mut t = if cfg.theme == "light" {
             Theme::light()
         } else {
@@ -121,7 +128,7 @@ impl Theme {
                 _ => {}
             }
         }
-        if supports_truecolor() {
+        if truecolor {
             t
         } else {
             t.downgrade_for_terminal()
@@ -225,17 +232,19 @@ mod tests {
 
     #[test]
     fn overrides_apply() {
-        // SAFETY: no other threads read/write COLORTERM concurrently in this test binary's
-        // relevant window; this pins the test to the truecolor path regardless of the
-        // ambient environment the test runner happens to have.
-        unsafe {
-            std::env::set_var("COLORTERM", "truecolor");
-        }
         let toml = DEFAULT_TOML.replace("# positive = \"#a6e3a1\"", "positive = \"#123456\"");
         let cfg = Config::from_toml(&toml).unwrap();
-        let t = Theme::from_config(&cfg);
+        let t = Theme::from_config_with(&cfg, true);
         assert_eq!(t.positive, Color::Rgb(0x12, 0x34, 0x56));
         assert_ne!(t.negative, t.positive);
+    }
+
+    #[test]
+    fn overrides_apply_downgrades_when_not_truecolor() {
+        let toml = DEFAULT_TOML.replace("# positive = \"#a6e3a1\"", "positive = \"#123456\"");
+        let cfg = Config::from_toml(&toml).unwrap();
+        let t = Theme::from_config_with(&cfg, false);
+        assert!(matches!(t.positive, Color::Indexed(_)));
     }
 
     #[test]
