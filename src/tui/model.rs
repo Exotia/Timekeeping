@@ -1,5 +1,7 @@
 //! The model owns all TUI state and draws every screen itself.
 
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
@@ -12,14 +14,16 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 use super::components;
 use super::ids::Id;
 use super::msg::{
-    Confirm, DayData, FormData, MonthData, Msg, RangeKind, StatsData, StoreCmd, StoreReply,
-    UserEvent,
+    Confirm, DayData, FormData, MonthData, Msg, RangeKind, SettingsData, StatsData, StoreCmd,
+    StoreReply, UserEvent,
 };
 use super::theme::Theme;
 use super::view::chrome;
 use super::worker::Worker;
+use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    Entry, HolidayCalendar, Minutes, Rules, check_overlap, check_range, deduction, parse_time,
+    Entry, HolidayCalendar, Minutes, Rules, check_overlap, check_range, deduction, parse_date,
+    parse_time,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,8 @@ pub enum Screen {
 
 pub struct Model {
     pub app: Application<Id, Msg, UserEvent>,
+    /// The data directory, so the settings overlay can rewrite `config.toml`.
+    pub home: PathBuf,
     pub terminal: Option<CrosstermTerminalAdapter>,
     pub theme: Theme,
     pub rules: Rules,
@@ -52,6 +58,7 @@ pub struct Model {
     pub worker: Worker,
     pub stats_range: RangeKind,
     pub form: Option<FormState>,
+    pub settings: Option<SettingsState>,
 }
 
 /// State of the open entry-form overlay: the raw field values plus the result of
@@ -61,6 +68,52 @@ pub struct FormState {
     pub error: Option<String>,
     /// `(gross of this entry, break deduction of the day, net of the day)`
     pub preview: Option<(Minutes, Minutes, Minutes)>,
+}
+
+/// State of the open settings overlay: the raw field values and, once the user
+/// has touched them, why they are not acceptable yet.
+pub struct SettingsState {
+    pub data: SettingsData,
+    pub error: Option<String>,
+}
+
+/// Turn the raw settings fields into a [`ConfigPatch`], naming the field that is
+/// wrong. The wording matches the entry form: `"field: what is wrong"`.
+pub fn validate_settings(d: &SettingsData, today: NaiveDate) -> Result<ConfigPatch, String> {
+    let start = parse_date(&d.start, today).map_err(|_| {
+        format!(
+            "start: '{}' is not a date (try 2026-09-15 or today)",
+            d.start
+        )
+    })?;
+    let balance = Minutes::from_str(d.balance.trim())
+        .map_err(|_| format!("balance: '{}' is not ±HH:MM (try +12:30)", d.balance))?;
+    let target = Minutes::from_str(d.target.trim())
+        .map_err(|_| format!("target: '{}' is not HH:MM (try 07:48)", d.target))?;
+    if target.0 <= 0 {
+        return Err("target: must be greater than 0".to_string());
+    }
+    let vacation: u32 = d
+        .vacation
+        .trim()
+        .parse()
+        .map_err(|_| format!("vacation: '{}' is not a number of days", d.vacation))?;
+    Ok(ConfigPatch {
+        start_date: Some(start),
+        initial_balance_minutes: Some(balance.0),
+        daily_target_minutes: Some(target.0),
+        vacation_days_per_year: Some(vacation),
+    })
+}
+
+/// The footer line of a settings overlay that validates: what saving would set.
+pub fn settings_footer(patch: &ConfigPatch) -> String {
+    format!(
+        "balance {} · target {} · vacation {}",
+        Minutes(patch.initial_balance_minutes.unwrap_or(0)),
+        Minutes(patch.daily_target_minutes.unwrap_or(0)).hhmm(),
+        patch.vacation_days_per_year.unwrap_or(0)
+    )
 }
 
 /// Validate the raw form input against the day's other entries.
@@ -185,6 +238,66 @@ impl Model {
         self.form = None;
         let _ = self.app.umount(&Id::Form);
         self.focus_screen();
+    }
+
+    /// Mount a fresh settings overlay, prefilled from the rules this session is
+    /// running with, and give it focus.
+    fn open_settings(&mut self) {
+        let data = SettingsData {
+            start: self.rules.start_date.to_string(),
+            balance: self.rules.initial_balance.to_string(),
+            target: self.rules.daily_target.hhmm(),
+            vacation: self.vacation_allowance.to_string(),
+        };
+        let _ = self.app.umount(&Id::Settings);
+        let _ = self.app.mount(
+            Id::Settings,
+            Box::new(components::settings::SettingsForm::new(data.clone()).with_theme(&self.theme)),
+            vec![],
+        );
+        self.settings = Some(SettingsState { data, error: None });
+        self.refresh_settings(false);
+        self.focus(Id::Settings);
+    }
+
+    fn close_settings(&mut self) {
+        self.settings = None;
+        let _ = self.app.umount(&Id::Settings);
+        self.focus_screen();
+    }
+
+    /// Re-validate the open settings overlay and push its footer line back in.
+    ///
+    /// `show_error` is false right after opening, where the values come straight
+    /// from the running config and there is nothing to complain about yet.
+    fn refresh_settings(&mut self, show_error: bool) {
+        let Some(s) = &self.settings else { return };
+        let (error, preview) = match validate_settings(&s.data, self.today) {
+            Ok(patch) => (None, Some(settings_footer(&patch))),
+            Err(e) => (Some(e), None),
+        };
+        let error = if show_error { error } else { None };
+        let (text, is_error) = match (&error, &preview) {
+            (Some(e), _) => (e.clone(), true),
+            (None, Some(p)) => (p.clone(), false),
+            _ => (String::new(), false),
+        };
+        if let Some(s) = &mut self.settings {
+            s.error = error;
+        }
+        self.set_settings_footer(text, is_error);
+    }
+
+    /// Push a footer line into the settings overlay.
+    fn set_settings_footer(&mut self, text: String, is_error: bool) {
+        let _ = self
+            .app
+            .attr(&Id::Settings, Attribute::Text, AttrValue::String(text));
+        let _ = self.app.attr(
+            &Id::Settings,
+            Attribute::Custom(components::form::ERROR_FLAG),
+            AttrValue::Flag(is_error),
+        );
     }
 
     /// Re-validate the open form and push the footer line into the component.
@@ -367,6 +480,46 @@ impl Model {
                     self.focus_screen()
                 }
             }
+            // --- settings overlay ---
+            Msg::OpenSettings => self.open_settings(),
+            Msg::SettingsChanged(data) => {
+                if let Some(s) = &mut self.settings {
+                    s.data = data;
+                }
+                self.refresh_settings(true);
+            }
+            Msg::SettingsCancel => self.close_settings(),
+            Msg::SettingsSubmit(data) => {
+                if let Some(s) = &mut self.settings {
+                    s.data = data.clone();
+                }
+                let patch = match validate_settings(&data, self.today) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        self.refresh_settings(true);
+                        return;
+                    }
+                };
+                match Config::write_updates(&self.home, &patch) {
+                    Ok(cfg) => {
+                        self.rules = cfg.rules();
+                        self.vacation_allowance = cfg.vacation_days_per_year;
+                        // Every balance on screen was computed from the old rules.
+                        self.load_month();
+                        self.set_status("Settings saved", false);
+                        self.close_settings();
+                    }
+                    Err(e) => {
+                        // Writing failed (a read-only home, a hand-edited file that no
+                        // longer parses): say so in the footer and stay open.
+                        let text = e.to_string();
+                        if let Some(s) = &mut self.settings {
+                            s.error = Some(text.clone());
+                        }
+                        self.set_settings_footer(text, true);
+                    }
+                }
+            }
             // --- statistics (Task 17) ---
             Msg::OpenStats => {
                 self.screen = Screen::Stats;
@@ -521,11 +674,15 @@ impl Model {
     pub fn view(&mut self) {
         let mut term = self.terminal.take().expect("terminal");
         let form_open = self.form.is_some();
+        let settings_open = self.settings.is_some();
         let _ = term.draw(|f| {
             self.draw(f);
+            let area = f.area();
             if form_open {
-                let area = f.area();
                 self.app.view(&Id::Form, f, area);
+            }
+            if settings_open {
+                self.app.view(&Id::Settings, f, area);
             }
         });
         self.terminal = Some(term);
@@ -557,7 +714,7 @@ impl Model {
             &self.theme,
             self.status.as_ref().map(|(m, e, _)| (m.as_str(), *e)),
         );
-        chrome::draw_key_hints(f, hints, &self.theme, self.key_hints());
+        chrome::draw_key_hints(f, hints, &self.theme, self.key_hints_for(area.width));
         if let Some(c) = &self.confirm {
             chrome::draw_confirm(f, area, &self.theme, &self.confirm_text(c));
         }
@@ -598,6 +755,7 @@ impl Model {
                 ("⏎", "edit"),
                 ("i/o", "clock"),
                 ("s", "stats"),
+                ("c", "settings"),
                 ("v f x p", "day type"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -620,6 +778,29 @@ impl Model {
         }
     }
 
+    /// The hints that fit into `width`. The row is a single line, and the month
+    /// screen's full set is wider than the 80-column minimum; there it gives up the
+    /// day-type keys, which are the group the `?` help spells out most fully.
+    pub fn key_hints_for(&self, width: u16) -> &'static [(&'static str, &'static str)] {
+        let full = self.key_hints();
+        if chrome::hints_width(full) <= width {
+            return full;
+        }
+        match self.screen {
+            Screen::Month => &[
+                ("↑↓", "day"),
+                ("[ ]", "month"),
+                ("⏎", "edit"),
+                ("i/o", "clock"),
+                ("s", "stats"),
+                ("c", "settings"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+            _ => full,
+        }
+    }
+
     pub fn help_keys(&self) -> &'static [(&'static str, &'static str)] {
         match self.screen {
             Screen::Month => &[
@@ -628,6 +809,7 @@ impl Model {
                 ("t", "jump to today"),
                 ("Enter", "open day editor"),
                 ("s", "statistics"),
+                ("c", "settings"),
                 ("i / o", "clock in / out"),
                 ("v", "vacation"),
                 ("f", "flex day"),
@@ -688,6 +870,9 @@ pub mod testing {
             Application::init(tuirealm::listener::EventListenerCfg::default());
         let m = Model {
             app,
+            // Nothing writes here unless a test opens the settings overlay; a test
+            // that saves settings points `home` at a `tempfile::tempdir()` of its own.
+            home: std::env::temp_dir().join("tk-testing-model"),
             terminal: None,
             theme: Theme::dark(),
             rules: Rules {
@@ -714,6 +899,7 @@ pub mod testing {
             worker: Worker { tx },
             stats_range: RangeKind::ThisMonth,
             form: None,
+            settings: None,
         };
         (m, rx)
     }
@@ -743,6 +929,7 @@ mod tests {
     use crate::core::{Day, DayKind};
     use crate::tui::msg::StoreCmd;
     use chrono::NaiveDate;
+    use tuirealm::component::AppComponent;
 
     fn d(y: i32, m: u32, dd: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, dd).unwrap()
@@ -1179,5 +1366,135 @@ mod tests {
             rx.try_recv().unwrap(),
             StoreCmd::SetKind(_, DayKind::Work)
         ));
+    }
+
+    #[test]
+    fn validate_settings_names_the_field_that_is_wrong() {
+        let today = d(2026, 9, 15);
+        let good = SettingsData {
+            start: "today".into(),
+            balance: "+12:30".into(),
+            target: "8:00".into(),
+            vacation: "28".into(),
+        };
+        assert_eq!(
+            validate_settings(&good, today).unwrap(),
+            ConfigPatch {
+                start_date: Some(today),
+                initial_balance_minutes: Some(750),
+                daily_target_minutes: Some(480),
+                vacation_days_per_year: Some(28),
+            }
+        );
+        let bad = |f: &dyn Fn(&mut SettingsData), needle: &str| {
+            let mut d = good.clone();
+            f(&mut d);
+            let e = validate_settings(&d, today).unwrap_err();
+            assert!(e.contains(needle), "{e}");
+        };
+        bad(&|d| d.start = "never".into(), "start");
+        bad(&|d| d.balance = "abc".into(), "balance");
+        bad(&|d| d.target = "zz".into(), "target");
+        // Zero is a parseable duration but not a usable target.
+        bad(&|d| d.target = "0:00".into(), "target");
+        bad(&|d| d.vacation = "-1".into(), "vacation");
+    }
+
+    #[test]
+    fn settings_footer_previews_the_patch() {
+        let today = d(2026, 9, 15);
+        let patch = validate_settings(
+            &SettingsData {
+                start: "today".into(),
+                balance: "+12:30".into(),
+                target: "8:00".into(),
+                vacation: "28".into(),
+            },
+            today,
+        )
+        .unwrap();
+        assert_eq!(
+            settings_footer(&patch),
+            "balance +12:30 · target 08:00 · vacation 28"
+        );
+    }
+
+    #[test]
+    fn settings_overlay_opens_prefilled_and_writes_the_config() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let dir = tempfile::tempdir().unwrap();
+        m.home = dir.path().to_path_buf();
+
+        // `c` on the month screen: prefilled from the running rules.
+        assert_eq!(
+            components::month::MonthScreen::default().on(&tuirealm::event::Event::Keyboard(
+                tuirealm::event::KeyEvent::new(
+                    tuirealm::event::Key::Char('c'),
+                    tuirealm::event::KeyModifiers::NONE
+                )
+            )),
+            Some(Msg::OpenSettings)
+        );
+        m.update(Msg::OpenSettings);
+        let s = m.settings.as_ref().expect("the overlay is open");
+        assert_eq!(s.data.start, today.to_string());
+        assert_eq!(s.data.balance, "+00:00");
+        assert_eq!(s.data.target, "07:48");
+        assert_eq!(s.data.vacation, "30");
+        assert_eq!(s.error, None, "a freshly opened overlay does not complain");
+
+        m.update(Msg::SettingsSubmit(SettingsData {
+            start: "2026-01-01".into(),
+            balance: "-2:30".into(),
+            target: "8:00".into(),
+            vacation: "28".into(),
+        }));
+        let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(written.contains("daily_target_minutes = 480"), "{written}");
+        assert_eq!(m.rules.daily_target, Minutes(480));
+        assert_eq!(m.rules.start_date, d(2026, 1, 1));
+        assert_eq!(m.rules.initial_balance, Minutes(-150));
+        assert_eq!(m.vacation_allowance, 28);
+        // The month is reloaded, because every balance in it just moved.
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::LoadMonth { .. }));
+        assert!(m.settings.is_none(), "saving closes the overlay");
+        let (msg, is_error, _) = m.status.as_ref().expect("a status message");
+        assert_eq!(msg, "Settings saved");
+        assert!(!is_error);
+    }
+
+    #[test]
+    fn settings_overlay_stays_open_on_an_invalid_value() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let dir = tempfile::tempdir().unwrap();
+        m.home = dir.path().to_path_buf();
+        m.update(Msg::OpenSettings);
+        let bad = SettingsData {
+            target: "zz".into(),
+            ..m.settings.as_ref().unwrap().data.clone()
+        };
+        m.update(Msg::SettingsChanged(bad.clone()));
+        let err = m.settings.as_ref().unwrap().error.clone().unwrap();
+        assert!(err.contains("target"), "{err}");
+        m.update(Msg::SettingsSubmit(bad));
+        assert!(m.settings.is_some(), "an invalid submit keeps it open");
+        assert!(
+            !dir.path().join("config.toml").exists(),
+            "nothing was written"
+        );
+        assert!(rx.try_recv().is_err());
+        // Esc closes it without writing anything.
+        m.update(Msg::SettingsCancel);
+        assert!(m.settings.is_none());
+        assert!(!dir.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn month_hints_and_help_mention_the_settings_key() {
+        let (m, _rx) = model(d(2026, 9, 15));
+        assert!(m.key_hints().contains(&("c", "settings")));
+        assert!(m.help_keys().contains(&("c", "settings")));
     }
 }

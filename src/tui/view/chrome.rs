@@ -67,6 +67,16 @@ pub fn draw_status_bar(f: &mut Frame, area: Rect, t: &Theme, status: Option<(&st
     f.render_widget(Paragraph::new(line), area);
 }
 
+/// Rendered width of a hint row: the leading space, every `key label` pair and
+/// the two spaces between them.
+pub fn hints_width(hints: &[(&str, &str)]) -> u16 {
+    let pairs: usize = hints
+        .iter()
+        .map(|(k, d)| k.chars().count() + 1 + d.chars().count())
+        .sum();
+    (1 + pairs + 2 * hints.len().saturating_sub(1)) as u16
+}
+
 pub fn draw_key_hints(f: &mut Frame, area: Rect, t: &Theme, hints: &[(&str, &str)]) {
     let mut spans = vec![Span::raw(" ")];
     for (i, (k, d)) in hints.iter().enumerate() {

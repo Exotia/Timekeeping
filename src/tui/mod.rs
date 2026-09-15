@@ -29,6 +29,9 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
     let _guard = rt.enter();
 
     let theme = theme::Theme::from_config(&ctx.config);
+    // Kept before the worker takes ownership of `ctx`: the settings overlay writes
+    // `config.toml` back into this directory.
+    let home = ctx.home.clone();
     let rules = ctx.config.rules();
     let cal = ctx.config.calendar();
     let vacation_allowance = ctx.config.vacation_days_per_year;
@@ -99,6 +102,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
     let now = Local::now().naive_local();
     let mut model = Model {
         app,
+        home,
         terminal: Some(terminal),
         theme,
         rules,
@@ -120,6 +124,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         worker,
         stats_range: msg::RangeKind::ThisMonth,
         form: None,
+        settings: None,
     };
     model.load_month();
 

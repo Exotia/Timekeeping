@@ -92,10 +92,12 @@ deduct_minutes = 48
 
 **Changing your settings.** The four settings you are most likely to revisit —
 `start_date`, `initial_balance_minutes`, `daily_target_minutes` and
-`vacation_days_per_year` — can be changed without opening an editor, with
-`tk config`. It rewrites `config.toml` in place, keeping your comments, key
-order and break tiers, and refuses a value the config file itself would reject,
-naming the offending field and exiting with status 1.
+`vacation_days_per_year` — can be changed without opening an editor, either
+with `tk config` or with `c` in the TUI's month view. Both rewrite
+`config.toml` in place, keeping your comments, key order and break tiers, and
+both refuse a value the config file itself would reject: `tk config` names the
+offending field and exits with status 1, the overlay puts the reason in its
+footer and stays open.
 
 ```bash
 tk config                                   # show the current values
@@ -183,9 +185,10 @@ tk export --format json --from 2026-01-01 -o hours.json
 
 The UI needs at least **80×24**; smaller than that it shows only a
 "Terminal too small" notice. Below 90 columns the month table drops the comment
-column. The month summary always sits below the table; below 100 columns its
-height is clamped to at most a third of the space the two share, so the table
-keeps most of the room.
+column, and below 92 the one-line key-hint row at the bottom drops the day-type
+keys, which no longer fit — `?` still lists them. The month summary always sits
+below the table; below 100 columns its height is clamped to at most a third of
+the space the two share, so the table keeps most of the room.
 
 `Ctrl+C` quits from anywhere. `?` opens the key help for the current screen;
 any key closes it again.
@@ -199,6 +202,7 @@ any key closes it again.
 | `t` | Jump to today |
 | `Enter` | Open the day editor |
 | `s` | Statistics |
+| `c` | Settings overlay: start date, initial balance, daily target, vacation days |
 | `i` / `o` | Clock in / clock out |
 | `v` | Mark the day as vacation |
 | `f` | Mark the day as a flex day |
@@ -252,6 +256,21 @@ Four fields in order: **start**, **end**, **project**, **comment**.
 Typing in the project field filters the picker; a name that matches nothing is
 created as a new project on save. The footer validates on every keystroke and
 previews this entry's gross time, the day's break deduction, and the day's net.
+
+### Settings (overlay)
+
+`c` on the month view opens the same four settings `tk config` changes, in a
+form: **start date**, **initial balance**, **daily target**, **vacation days**.
+The keys are the entry form's — `Tab` / `Shift+Tab` and `Enter` move between
+fields, `Ctrl+S` or `Enter` on the last field saves, `Esc` cancels.
+
+The footer validates on every keystroke and previews what saving would set. On
+save `tk` rewrites `config.toml` (comments and break tiers intact) and applies
+the new rules straight away: balances are recomputed from the new start date,
+target and initial balance without restarting. A value the config file would
+reject keeps the overlay open with the reason in the footer. The settings not
+in this form — theme, extra holidays, break tiers — still need the file and a
+restart.
 
 ### Statistics
 

@@ -7,6 +7,7 @@ pub enum Id {
     Day,
     Form,
     Stats,
+    Settings,
     Confirm,
     Help,
 }

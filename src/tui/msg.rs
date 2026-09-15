@@ -29,6 +29,15 @@ pub struct FormData {
     pub comment: String,
 }
 
+/// The four raw field values of the settings overlay, exactly as typed.
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct SettingsData {
+    pub start: String,
+    pub balance: String,
+    pub target: String,
+    pub vacation: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Msg {
     Quit,
@@ -63,6 +72,12 @@ pub enum Msg {
     FormCancel,
     /// A form field changed; carries the whole form so the model can re-validate.
     FormChanged(FormData),
+    // settings
+    OpenSettings,
+    /// A settings field changed; carries the whole overlay so the model can re-validate.
+    SettingsChanged(SettingsData),
+    SettingsSubmit(SettingsData),
+    SettingsCancel,
     // stats
     StatsRange(RangeKind),
 }

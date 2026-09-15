@@ -94,3 +94,26 @@ fn month_screen_100x30_and_80x24() {
         "minimum-size notice missing:\n{joined}"
     );
 }
+
+#[test]
+fn key_hints_fit_the_minimum_terminal() {
+    let (today, days) = september_2026();
+    let (mut m, _rx) = model(today);
+    m.month = Some(month_data(today, days, None));
+    // The hint row is a single line; at the documented minimum width the month
+    // screen's full set does not fit, so the essential keys must still be there.
+    for w in [80u16, 100] {
+        let out = rows(w, 24, |f| m.draw(f));
+        let hints = out.last().unwrap().clone();
+        assert!(
+            hints.chars().count() <= w as usize,
+            "hints overflow at {w}: {hints}"
+        );
+        assert!(
+            hints.contains("q quit"),
+            "quit hint missing at {w}: {hints}"
+        );
+        assert!(hints.contains("c settings"), "at {w}: {hints}");
+        assert!(hints.contains("? help"), "at {w}: {hints}");
+    }
+}
