@@ -132,7 +132,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk` | | Open the terminal UI. |
 | `tk in` | `--force` | Clock in at the current minute. `--force` replaces an existing open clock-in. |
 | `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry. Without `--project` the last used project is reused; if there is none, the command fails. |
-| `tk status` | | One line for prompts and status bars: running time and today's net while clocked in, otherwise today's net plus the overall balance. |
+| `tk status` | | One line for prompts and status bars. Clocked in: running time, the time you clocked in at, today's net and the overall balance. Otherwise: `not clocked in`, today's net and the overall balance. |
 | `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. |
 | `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. |
 | `tk projects` | | Same as `tk projects list`. |
@@ -145,6 +145,8 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk export` | `--format csv\|json` (default `csv`)<br>`--from DATE`<br>`--to DATE`<br>`-o, --output PATH` | Export entries. Defaults to `start_date` … today, printed to stdout unless `--output` is given. |
 
 Global flags, accepted with any subcommand: `--home DIR`, `--help`, `--version`.
+`tk help <subcommand>` prints the help for one subcommand, the same as
+`tk <subcommand> --help`.
 
 **DATE arguments** accept `YYYY-MM-DD`, the words `today`, `yesterday` and
 `tomorrow`, or a whole-number offset in days from today (`-1` is yesterday,
@@ -167,7 +169,9 @@ tk export --format json --from 2026-01-01 -o hours.json
 
 The UI needs at least **80×24**; smaller than that it shows only a
 "Terminal too small" notice. Below 90 columns the month table drops the comment
-column, and below 100 columns the month summary is stacked under the table.
+column. The month summary always sits below the table; below 100 columns its
+height is clamped to at most a third of the space the two share, so the table
+keeps most of the room.
 
 `Ctrl+C` quits from anywhere. `?` opens the key help for the current screen;
 any key closes it again.
@@ -191,7 +195,9 @@ any key closes it again.
 | `Esc` | Close an open overlay |
 | `q`, `Ctrl+C` | Quit |
 
-Changing a day type asks for confirmation first. Clocking in while a session is
+Changing a day type asks for confirmation first, and is refused with a status
+message if the day already has entries, or if it is a weekend (weekends never
+carry a target, so they need no day type). Clocking in while a session is
 already open asks whether to replace it.
 
 ### Day editor
@@ -207,7 +213,9 @@ already open asks whether to replace it.
 | `Esc`, `q` | Back to the month view |
 
 Only `work` days may hold entries; saving one on any other kind reports
-"change the day type to work first" in the status bar.
+"change the day type to work first" in the status bar. Cycling the day type is
+itself refused — with "Day has entries; delete them first" or "Weekends need no
+day type" — while the day holds entries or falls on a weekend.
 
 ### Entry form (overlay)
 
@@ -225,7 +233,7 @@ Four fields in order: **start**, **end**, **project**, **comment**.
 | `Esc` | Cancel |
 | `←`, `→`, `Home`, `End` | Move the cursor in the focused field |
 | `Backspace` | Delete the character before the cursor |
-| `Delete` | Clear the field |
+| `Delete` | Delete the character under the cursor |
 
 Typing in the project field filters the picker; a name that matches nothing is
 created as a new project on save. The footer validates on every keystroke and

@@ -234,14 +234,43 @@ mod tests {
         );
     }
 
+    /// The environment is process-global, so any test that writes it holds this lock
+    /// for its whole body. `cargo test` runs the suite in parallel threads.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Puts `TK_HOME` back exactly as it was, panic or not.
+    struct TkHome(Option<String>);
+
+    impl TkHome {
+        fn set(v: &str) -> TkHome {
+            let prev = std::env::var("TK_HOME").ok();
+            unsafe { std::env::set_var("TK_HOME", v) };
+            TkHome(prev)
+        }
+    }
+
+    impl Drop for TkHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => unsafe { std::env::set_var("TK_HOME", v) },
+                None => unsafe { std::env::remove_var("TK_HOME") },
+            }
+        }
+    }
+
     #[test]
     fn resolve_home_prefers_flag_then_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let flag = std::path::Path::new("/tmp/x");
         assert_eq!(resolve_home(Some(flag)), flag.to_path_buf());
-        // env is process-global; run this check in isolation
-        unsafe { std::env::set_var("TK_HOME", "/tmp/envhome") };
+        let restore = TkHome::set("/tmp/envhome");
         assert_eq!(resolve_home(None), std::path::PathBuf::from("/tmp/envhome"));
-        unsafe { std::env::remove_var("TK_HOME") };
+        // The flag still wins over a set variable.
+        assert_eq!(resolve_home(Some(flag)), flag.to_path_buf());
+        // An empty variable is ignored, as if it were unset.
+        let _empty = TkHome::set("");
         assert!(resolve_home(None).ends_with("tk"));
+        drop(_empty);
+        drop(restore);
     }
 }
