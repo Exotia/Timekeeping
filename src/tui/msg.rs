@@ -61,6 +61,8 @@ pub enum Msg {
     // form
     FormSubmit(FormData),
     FormCancel,
+    /// A form field changed; carries the whole form so the model can re-validate.
+    FormChanged(FormData),
     // stats
     StatsRange(RangeKind),
 }
