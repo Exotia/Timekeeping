@@ -9,7 +9,9 @@ use tuirealm::ratatui::layout::{Constraint, Layout};
 use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
 use super::ids::Id;
-use super::msg::{Confirm, DayData, MonthData, Msg, StatsData, StoreCmd, StoreReply, UserEvent};
+use super::msg::{
+    Confirm, DayData, MonthData, Msg, RangeKind, StatsData, StoreCmd, StoreReply, UserEvent,
+};
 use super::theme::Theme;
 use super::view::chrome;
 use super::worker::Worker;
@@ -44,6 +46,7 @@ pub struct Model {
     pub redraw: bool,
     pub worker: Worker,
     pub size: (u16, u16),
+    pub stats_range: RangeKind,
 }
 
 pub const STATUS_TTL: Duration = Duration::from_secs(5);
@@ -58,6 +61,11 @@ impl Model {
             year: self.selected.year(),
             month: self.selected.month(),
         });
+    }
+
+    fn load_stats(&self) {
+        let (from, to) = super::view::stats::range_for(self.stats_range, self.today);
+        self.worker.send(StoreCmd::LoadStats { from, to });
     }
 
     pub fn focus(&mut self, id: Id) {
@@ -207,6 +215,18 @@ impl Model {
                 } else {
                     self.focus_screen()
                 }
+            }
+            // --- statistics (Task 17) ---
+            Msg::OpenStats => {
+                self.screen = Screen::Stats;
+                self.stats = None;
+                self.focus(Id::Stats);
+                self.load_stats();
+            }
+            Msg::StatsRange(r) => {
+                self.stats_range = r;
+                self.stats = None;
+                self.load_stats();
             }
             // Filled in by Tasks 15–18.
             _ => {}
@@ -414,6 +434,7 @@ pub mod testing {
             redraw: false,
             worker: Worker { tx },
             size: (100, 30),
+            stats_range: RangeKind::ThisMonth,
         };
         (m, rx)
     }

@@ -73,6 +73,11 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         Box::new(components::help::HelpOverlay::default()),
         vec![],
     )?;
+    app.mount(
+        Id::Stats,
+        Box::new(components::stats::StatsScreen::default()),
+        vec![],
+    )?;
     app.active(&Id::Month)?;
 
     // Restore the terminal on panic so the shell is usable.
@@ -109,6 +114,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         redraw: true,
         worker,
         size: (0, 0),
+        stats_range: msg::RangeKind::ThisMonth,
     };
     model.load_month();
 
