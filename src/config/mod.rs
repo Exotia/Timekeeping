@@ -2,49 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::core::{BreakTier, HolidayCalendar, Minutes, Rules};
-
-fn deserialize_dates<'de, D>(deserializer: D) -> Result<Vec<NaiveDate>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-    use std::fmt;
-
-    struct DateVec;
-
-    impl<'de> Visitor<'de> for DateVec {
-        type Value = Vec<NaiveDate>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("an array of date strings")
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> Result<Vec<NaiveDate>, A::Error>
-        where
-            A: de::SeqAccess<'de>,
-        {
-            let mut dates = Vec::new();
-            loop {
-                match seq.next_element::<String>() {
-                    Ok(Some(s)) => {
-                        let date =
-                            NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(de::Error::custom)?;
-                        dates.push(date);
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
-                }
-            }
-            Ok(dates)
-        }
-    }
-
-    deserializer.deserialize_seq(DateVec)
-}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -63,6 +24,7 @@ daily_target_minutes = 468         # 7:48
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light"
+extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
 after_minutes = 180
@@ -72,13 +34,12 @@ deduct_minutes = 18
 after_minutes = 360
 deduct_minutes = 48
 
-extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
-
 [theme_overrides]                  # optional; any role may be set to "#rrggbb" or a named color
 # positive = "#a6e3a1"
 "##;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct BreakTierCfg {
     pub after_minutes: i32,
     pub deduct_minutes: i32,
@@ -99,7 +60,7 @@ pub struct Config {
     pub theme: String,
     #[serde(default)]
     pub break_tiers: Vec<BreakTierCfg>,
-    #[serde(default, deserialize_with = "deserialize_dates")]
+    #[serde(default)]
     pub extra_holidays: Vec<NaiveDate>,
     #[serde(default)]
     pub theme_overrides: BTreeMap<String, String>,
@@ -124,27 +85,7 @@ fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
 
 impl Config {
     pub fn from_toml(s: &str) -> Result<Config, ConfigError> {
-        let mut c: Config = toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
-
-        // Parse extra_holidays manually if not set by deserializer
-        if c.extra_holidays.is_empty() {
-            // Try to extract and parse extra_holidays from the TOML string
-            if let Some(start) = s.find("extra_holidays = [") {
-                let after_bracket = &s[start + 18..];
-                if let Some(end) = after_bracket.find(']') {
-                    let dates_str = &after_bracket[..end];
-                    for date_part in dates_str.split(',') {
-                        let trimmed = date_part.trim().trim_matches('"');
-                        if !trimmed.is_empty()
-                            && let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
-                        {
-                            c.extra_holidays.push(date);
-                        }
-                    }
-                }
-            }
-        }
-
+        let c: Config = toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
         c.validate()?;
         Ok(c)
     }
