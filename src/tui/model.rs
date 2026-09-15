@@ -4,18 +4,21 @@ use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Days, Local, NaiveDate, NaiveTime, Timelike};
 use tuirealm::application::Application;
+use tuirealm::props::{AttrValue, Attribute};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Layout};
 use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
+use super::components;
 use super::ids::Id;
 use super::msg::{
-    Confirm, DayData, MonthData, Msg, RangeKind, StatsData, StoreCmd, StoreReply, UserEvent,
+    Confirm, DayData, FormData, MonthData, Msg, RangeKind, StatsData, StoreCmd, StoreReply,
+    UserEvent,
 };
 use super::theme::Theme;
 use super::view::chrome;
 use super::worker::Worker;
-use crate::core::{HolidayCalendar, Rules};
+use crate::core::{Entry, HolidayCalendar, Minutes, Rules, check_overlap, deduction, parse_time};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -47,6 +50,58 @@ pub struct Model {
     pub worker: Worker,
     pub size: (u16, u16),
     pub stats_range: RangeKind,
+    pub form: Option<FormState>,
+}
+
+/// State of the open entry-form overlay: the raw field values plus the result of
+/// validating them, recomputed on every keystroke.
+pub struct FormState {
+    pub data: FormData,
+    pub error: Option<String>,
+    /// `(gross of this entry, break deduction of the day, net of the day)`
+    pub preview: Option<(Minutes, Minutes, Minutes)>,
+}
+
+/// Validate the raw form input against the day's other entries.
+///
+/// Returns `(start, end, gross of this entry, day deduction, day net)`.
+pub fn validate_form(
+    d: &FormData,
+    existing: &[Entry],
+    rules: &Rules,
+) -> Result<(NaiveTime, NaiveTime, Minutes, Minutes, Minutes), String> {
+    let start = parse_time(&d.start)
+        .map_err(|_| format!("start: '{}' is not a time (try 800 or 8:00)", d.start))?;
+    let end = parse_time(&d.end)
+        .map_err(|_| format!("end: '{}' is not a time (try 1730 or 17:30)", d.end))?;
+    if d.project.trim().is_empty() {
+        return Err("project: required".into());
+    }
+    check_overlap(existing, start, end, d.id)
+        .map_err(|_| "overlaps an existing entry".to_string())?;
+    let this = Entry {
+        id: d.id.unwrap_or(-1),
+        date: existing.first().map(|e| e.date).unwrap_or_default(),
+        start,
+        end,
+        project: String::new(),
+        comment: String::new(),
+    };
+    let gross_this = this.duration();
+    let gross_day: Minutes = existing
+        .iter()
+        .filter(|e| Some(e.id) != d.id)
+        .map(Entry::duration)
+        .sum::<Minutes>()
+        + gross_this;
+    let ded = deduction(gross_day, &rules.tiers);
+    Ok((
+        start,
+        end,
+        gross_this,
+        ded,
+        Minutes((gross_day - ded).0.max(0)),
+    ))
 }
 
 pub const STATUS_TTL: Duration = Duration::from_secs(5);
@@ -84,6 +139,78 @@ impl Model {
     fn open_confirm(&mut self, c: Confirm) {
         self.confirm = Some(c);
         self.focus(Id::Confirm);
+    }
+
+    /// Mount a fresh form component over the day screen and give it focus.
+    fn open_form(&mut self, data: FormData) {
+        let projects: Vec<String> = self
+            .day
+            .as_ref()
+            .map(|d| d.projects.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        let _ = self.app.umount(&Id::Form);
+        let _ = self.app.mount(
+            Id::Form,
+            Box::new(components::form::EntryForm::new(data.clone(), projects)),
+            vec![],
+        );
+        self.form = Some(FormState {
+            data,
+            error: None,
+            preview: None,
+        });
+        // A freshly opened blank form should not greet the user with a red error.
+        self.refresh_form(false);
+        self.focus(Id::Form);
+    }
+
+    fn close_form(&mut self) {
+        self.form = None;
+        let _ = self.app.umount(&Id::Form);
+        self.focus_screen();
+    }
+
+    /// Re-validate the open form and push the footer line into the component.
+    ///
+    /// `show_error` is false while the form is untouched, so that opening an empty
+    /// form does not immediately complain about the empty time fields.
+    fn refresh_form(&mut self, show_error: bool) {
+        let Some(form) = &self.form else { return };
+        let entries = self
+            .day
+            .as_ref()
+            .map(|d| d.day.entries.as_slice())
+            .unwrap_or(&[]);
+        let (error, preview) = match validate_form(&form.data, entries, &self.rules) {
+            Ok((_, _, gross, ded, net)) => (None, Some((gross, ded, net))),
+            Err(e) => (Some(e), None),
+        };
+        let error = if show_error { error } else { None };
+        let (text, is_error) = match (&error, &preview) {
+            (Some(e), _) => (e.clone(), true),
+            (None, Some((g, d, n))) => (
+                format!(
+                    "gross +{} · break -{} · net +{}",
+                    g.hhmm(),
+                    d.hhmm(),
+                    n.hhmm()
+                ),
+                false,
+            ),
+            _ => (String::new(), false),
+        };
+        if let Some(form) = &mut self.form {
+            form.error = error;
+            form.preview = preview;
+        }
+        let _ = self
+            .app
+            .attr(&Id::Form, Attribute::Text, AttrValue::String(text));
+        let _ = self.app.attr(
+            &Id::Form,
+            Attribute::Custom(components::form::ERROR_FLAG),
+            AttrValue::Flag(is_error),
+        );
     }
 
     fn close_overlay(&mut self) {
@@ -281,8 +408,77 @@ impl Model {
                 self.worker.send(StoreCmd::SetKind(d.day.date, kind));
             }
             // --- end day editor (Task 15) ---
-            // Filled in by Tasks 16–18.
-            _ => {}
+            // --- entry form (Task 16) ---
+            Msg::DayAdd => self.open_form(FormData::default()),
+            Msg::DayEdit => {
+                if let Some(e) = self
+                    .day
+                    .as_ref()
+                    .and_then(|d| d.day.entries.get(self.day_cursor))
+                {
+                    let data = FormData {
+                        id: Some(e.id),
+                        start: e.start.format("%H:%M").to_string(),
+                        end: e.end.format("%H:%M").to_string(),
+                        project: e.project.clone(),
+                        comment: e.comment.clone(),
+                    };
+                    self.open_form(data);
+                }
+            }
+            Msg::FormCancel => self.close_form(),
+            Msg::FormChanged(data) => {
+                if let Some(form) = &mut self.form {
+                    form.data = data;
+                }
+                self.refresh_form(true);
+            }
+            Msg::FormSubmit(data) => {
+                let Some(day) = &self.day else { return };
+                if !day.day.kind.allows_entries() {
+                    self.set_status(
+                        format!(
+                            "{} day: change the day type to work first",
+                            day.day.kind.display_name()
+                        ),
+                        true,
+                    );
+                    return;
+                }
+                match validate_form(&data, &day.day.entries, &self.rules) {
+                    Err(_) => {
+                        if let Some(form) = &mut self.form {
+                            form.data = data;
+                        }
+                        self.refresh_form(true);
+                    }
+                    Ok((start, end, ..)) => {
+                        let project = data.project.trim().to_string();
+                        let comment = data.comment.trim().to_string();
+                        match data.id {
+                            None => {
+                                self.worker.send(StoreCmd::AddEntry {
+                                    date: day.day.date,
+                                    start,
+                                    end,
+                                    project,
+                                    comment,
+                                });
+                            }
+                            Some(id) => {
+                                self.worker.send(StoreCmd::UpdateEntry {
+                                    id,
+                                    start,
+                                    end,
+                                    project,
+                                    comment,
+                                });
+                            }
+                        }
+                        self.close_form();
+                    }
+                }
+            }
         }
     }
 
@@ -309,7 +505,14 @@ impl Model {
 
     pub fn view(&mut self) {
         let mut term = self.terminal.take().expect("terminal");
-        let _ = term.draw(|f| self.draw(f));
+        let form_open = self.form.is_some();
+        let _ = term.draw(|f| {
+            self.draw(f);
+            if form_open {
+                let area = f.area();
+                self.app.view(&Id::Form, f, area);
+            }
+        });
         self.terminal = Some(term);
     }
 
@@ -491,6 +694,7 @@ pub mod testing {
             worker: Worker { tx },
             size: (100, 30),
             stats_range: RangeKind::ThisMonth,
+            form: None,
         };
         (m, rx)
     }
@@ -664,6 +868,230 @@ mod tests {
         m.update(Msg::DaySelect(1));
         m.update(Msg::DayDelete);
         assert_eq!(m.confirm, Some(Confirm::DeleteEntry(2)));
+    }
+
+    #[test]
+    fn validate_form_cases() {
+        let today = d(2026, 9, 15);
+        let (m, _rx) = model(today);
+        let t = |h, mi| chrono::NaiveTime::from_hms_opt(h, mi, 0).unwrap();
+        let existing = vec![crate::core::Entry {
+            id: 1,
+            date: today,
+            start: t(8, 0),
+            end: t(12, 0),
+            project: "A".into(),
+            comment: "".into(),
+        }];
+        let fd = |s: &str, e: &str, p: &str| FormData {
+            id: None,
+            start: s.into(),
+            end: e.into(),
+            project: p.into(),
+            comment: "".into(),
+        };
+        let ok = validate_form(&fd("1300", "16:00", "Alpha"), &existing, &m.rules).unwrap();
+        assert_eq!(ok.0, t(13, 0));
+        assert_eq!(ok.2, crate::core::Minutes(180)); // gross of this entry
+        assert_eq!(ok.3, crate::core::Minutes(48)); // day deduction with 7h total
+        assert_eq!(ok.4, crate::core::Minutes(420 - 48)); // day net
+        assert!(
+            validate_form(&fd("abc", "1600", "A"), &existing, &m.rules)
+                .unwrap_err()
+                .contains("start")
+        );
+        assert!(
+            validate_form(&fd("1300", "", "A"), &existing, &m.rules)
+                .unwrap_err()
+                .contains("end")
+        );
+        assert!(
+            validate_form(&fd("1300", "1600", " "), &existing, &m.rules)
+                .unwrap_err()
+                .contains("project")
+        );
+        assert!(
+            validate_form(&fd("1100", "1300", "A"), &existing, &m.rules)
+                .unwrap_err()
+                .contains("overlap")
+        );
+        // editing entry 1 itself may overlap its old slot
+        let mut edit = fd("0900", "1200", "A");
+        edit.id = Some(1);
+        assert!(validate_form(&edit, &existing, &m.rules).is_ok());
+    }
+
+    #[test]
+    fn form_submit_sends_add_or_update() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.screen = Screen::Day;
+        m.day = Some(crate::tui::msg::DayData {
+            day: Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![],
+            },
+            projects: vec![],
+        });
+        let t = |h, mi| NaiveTime::from_hms_opt(h, mi, 0).unwrap();
+        // Surrounding whitespace must not reach the store.
+        m.update(Msg::FormSubmit(FormData {
+            id: None,
+            start: "0900".into(),
+            end: "1200".into(),
+            project: " Alpha ".into(),
+            comment: " x ".into(),
+        }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::AddEntry { date, start, end, project, comment }
+                if date == today
+                    && start == t(9, 0)
+                    && end == t(12, 0)
+                    && project == "Alpha"
+                    && comment == "x"
+        ));
+        m.update(Msg::FormSubmit(FormData {
+            id: Some(7),
+            start: "09:00".into(),
+            end: "1200".into(),
+            project: "Alpha".into(),
+            comment: "x".into(),
+        }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::UpdateEntry { id: 7, start, end, project, comment }
+                if start == t(9, 0) && end == t(12, 0) && project == "Alpha" && comment == "x"
+        ));
+        m.update(Msg::DayAdd);
+        assert!(m.form.is_some());
+        m.update(Msg::FormSubmit(FormData {
+            id: None,
+            start: "zz".into(),
+            end: "1200".into(),
+            project: "Alpha".into(),
+            comment: "".into(),
+        }));
+        assert!(rx.try_recv().is_err());
+        assert!(m.form.as_ref().unwrap().error.is_some());
+    }
+
+    #[test]
+    fn form_opens_prefilled_previews_and_cancels() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let t = |h, mi| NaiveTime::from_hms_opt(h, mi, 0).unwrap();
+        m.screen = Screen::Day;
+        m.day = Some(crate::tui::msg::DayData {
+            day: Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![Entry {
+                    id: 1,
+                    date: today,
+                    start: t(8, 0),
+                    end: t(12, 0),
+                    project: "Alpha".into(),
+                    comment: "morning".into(),
+                }],
+            },
+            projects: vec![crate::core::Project {
+                id: 1,
+                name: "Alpha".into(),
+                color_index: 0,
+                archived: false,
+            }],
+        });
+
+        // `e` edits the entry under the cursor, prefilled.
+        m.update(Msg::DayEdit);
+        let f = m.form.as_ref().expect("form open");
+        assert_eq!(f.data.id, Some(1));
+        assert_eq!(f.data.start, "08:00");
+        assert_eq!(f.data.end, "12:00");
+        assert_eq!(f.data.project, "Alpha");
+        assert_eq!(f.data.comment, "morning");
+        // Editing the entry against itself is valid, so the footer previews it.
+        assert_eq!(f.error, None);
+        // 4h gross crosses the first break tier: 18 minutes off, 3:42 net.
+        assert_eq!(f.preview, Some((Minutes(240), Minutes(18), Minutes(222))));
+
+        // A live edit that overlaps the entry's own old slot is fine; a bad time is not.
+        m.update(Msg::FormChanged(FormData {
+            start: "abc".into(),
+            ..m.form.as_ref().unwrap().data.clone()
+        }));
+        let f = m.form.as_ref().unwrap();
+        assert!(f.error.as_deref().unwrap().contains("start"));
+        assert_eq!(f.preview, None);
+
+        // Esc closes the overlay and hands focus back to the day screen.
+        m.update(Msg::FormCancel);
+        assert!(m.form.is_none());
+
+        // `a` opens a blank form; a new entry clashing with the existing one is refused.
+        m.update(Msg::DayAdd);
+        assert_eq!(m.form.as_ref().unwrap().data, FormData::default());
+        // Nothing typed yet, so no complaint about the empty fields.
+        assert_eq!(m.form.as_ref().unwrap().error, None);
+        m.update(Msg::FormChanged(FormData {
+            id: None,
+            start: "1100".into(),
+            end: "1300".into(),
+            project: "Beta".into(),
+            comment: String::new(),
+        }));
+        assert!(
+            m.form
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("overlap")
+        );
+        m.update(Msg::FormSubmit(m.form.as_ref().unwrap().data.clone()));
+        assert!(rx.try_recv().is_err());
+        assert!(m.form.is_some(), "an invalid submit keeps the form open");
+
+        // A valid slot after the existing entry goes through and closes the form.
+        m.update(Msg::FormSubmit(FormData {
+            id: None,
+            start: "1300".into(),
+            end: "1600".into(),
+            project: "Beta".into(),
+            comment: String::new(),
+        }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::AddEntry { project, .. } if project == "Beta"
+        ));
+        assert!(m.form.is_none());
+    }
+
+    #[test]
+    fn form_submit_refused_on_a_non_work_day() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.screen = Screen::Day;
+        m.day = Some(crate::tui::msg::DayData {
+            day: Day {
+                date: today,
+                kind: DayKind::Vacation,
+                entries: vec![],
+            },
+            projects: vec![],
+        });
+        m.update(Msg::FormSubmit(FormData {
+            id: None,
+            start: "0900".into(),
+            end: "1200".into(),
+            project: "Alpha".into(),
+            comment: String::new(),
+        }));
+        assert!(rx.try_recv().is_err());
+        assert!(m.status.as_ref().unwrap().1, "shown as an error");
     }
 
     #[test]

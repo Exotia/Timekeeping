@@ -120,6 +120,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         worker,
         size: (0, 0),
         stats_range: msg::RangeKind::ThisMonth,
+        form: None,
     };
     model.load_month();
 
