@@ -87,7 +87,7 @@ deduct_minutes = 48
 | `vacation_days_per_year` | `30` | Allowance shown in the title bar and on the statistics screen; remaining = allowance − vacation working days taken in the calendar year. No carry-over. |
 | `week_starts_on` | `"monday"` | `"monday"` or `"sunday"`. Accepted and validated, but it has no effect yet: week rows are grouped by ISO week number, which always begins on Monday. |
 | `theme` | `"dark"` | `"dark"`, `"light"` or `"purple"` (deep purple ground, vivid green/red balances). |
-| `hours_format` | `"hm"` | How durations are written: `"hm"` is `+07:48`, `"decimal"` is `+7.80h`. Applies to the TUI and to everything `tk` prints except `tk export`, whose `gross` and `net` columns stay `±HH:MM`. `u` in the TUI flips it and writes the new value back here. |
+| `hours_format` | `"hm"` | How durations are written: `"hm"` is `+07:48`, `"decimal"` is `+7.80h`. Applies to the TUI and to everything `tk` prints except `tk export`, whose `gross`, `net` and `break` columns stay `HH:MM`. `u` in the TUI flips it and writes the new value back here. |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as public holidays on top of the built-in Saxon ones (company holidays such as 24 and 31 December). |
 | `[[break_tiers]]` | 180→18, 360→48 | Statutory break table, applied to each seamless session on its own length. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
 | `[theme_overrides]` | empty | Per-role color overrides. |
@@ -439,6 +439,8 @@ balance; those belong to the chart.
 | Overlay | Keys |
 | --- | --- |
 | Confirm dialog | `y` or `Enter` confirms; `n`, `Esc` or `q` cancels |
+| Project picker (`i`) | Type to filter; `↑` `↓` move the highlight; `Enter` or `Tab` takes it; `Esc` cancels |
+| Break split (`b` in the day editor) | `Tab` / `Shift+Tab` and `↑` `↓` move between entries; `Enter` on the last one or `Ctrl+S` saves; `Esc` cancels |
 | Help | Any key closes it |
 
 ## Moving your data around
