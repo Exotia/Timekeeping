@@ -761,6 +761,35 @@ mod tests {
     }
 
     #[test]
+    fn a_break_taken_after_midnight_books_the_night_and_pauses_on_the_next_day() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(23, 0), "Alpha").unwrap();
+        // Half past midnight: a genuine crossing, not the same-minute case.
+        let e = s.take_break(at(d(2026, 9, 16), 0, 30), "night").unwrap();
+        assert_eq!((e.date, e.start, e.end), (day, t(23, 0), t(0, 30)));
+        assert!(e.crosses_midnight());
+        assert_eq!(e.duration(), Minutes(90));
+        // The break belongs to the day the entry ended on, from the minute the
+        // work stopped, still on the project to come back to.
+        let sess = s.session().unwrap().expect("the session is kept");
+        assert_eq!(sess.state, SessionState::Break);
+        assert_eq!((sess.date, sess.start), (d(2026, 9, 16), t(0, 30)));
+        assert_eq!(sess.project.as_deref(), Some("Alpha"));
+        // Coming back opens the next session after the break, on the new day.
+        let back = s.resume(at(d(2026, 9, 16), 1, 0), None).unwrap();
+        assert_eq!((back.date, back.start), (d(2026, 9, 16), t(1, 0)));
+        let e2 = s
+            .clock_out(at(d(2026, 9, 16), 2, 0), "")
+            .unwrap()
+            .expect("booked");
+        assert_eq!(
+            (e2.date, e2.start, e2.end),
+            (d(2026, 9, 16), t(1, 0), t(2, 0))
+        );
+    }
+
+    #[test]
     fn clocking_out_on_a_break_clears_it_without_booking() {
         let s = Store::open_in_memory().unwrap();
         let day = d(2026, 9, 15);

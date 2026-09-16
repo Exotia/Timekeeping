@@ -24,7 +24,6 @@ impl AppComponent<Msg, UserEvent> for DayScreen {
             Key::Char('e') | Key::Enter => Msg::DayEdit,
             Key::Char('d') | Key::Delete => Msg::DayDelete,
             Key::Char('b') => Msg::DayBreakSplit,
-
             Key::Left | Key::Char('h') => Msg::DayKindPrev,
             Key::Right | Key::Char('l') => Msg::DayKindNext,
             Key::Char('u') => Msg::ToggleHours,

@@ -5,6 +5,7 @@
 
 use chrono::NaiveDate;
 use tk::core::{Day, DayKind, Entry};
+use tk::tui::model::Screen;
 use tk::tui::model::testing::{model, month_data};
 use tuirealm::ratatui::Terminal;
 use tuirealm::ratatui::backend::TestBackend;
@@ -208,27 +209,63 @@ fn month_screen_80x24_on_a_break() {
     );
 }
 
+/// The hint row is a single line on every screen, and it may never be cut: a key
+/// hint clipped to `Esc bac` is worse than one the `?` help carries alone. Every
+/// screen is measured at the documented minimum and at 100 columns, so no hint
+/// added later can push a row past the edge unnoticed.
 #[test]
 fn key_hints_fit_the_minimum_terminal() {
     let (today, days) = september_2026();
     let (mut m, _rx) = model(today);
-    m.month = Some(month_data(today, days, None));
-    // The hint row is a single line; at the documented minimum width the month
-    // screen's full set does not fit, so the essential keys must still be there.
-    for w in [80u16, 100] {
-        let out = rows(w, 24, |f| m.draw(f));
-        let hints = out.last().unwrap().clone();
-        assert!(
-            hints.chars().count() <= w as usize,
-            "hints overflow at {w}: {hints}"
-        );
-        assert!(
-            hints.contains("q quit"),
-            "quit hint missing at {w}: {hints}"
-        );
-        assert!(hints.contains("c settings"), "at {w}: {hints}");
-        assert!(hints.contains("? help"), "at {w}: {hints}");
+    m.month = Some(month_data(today, days.clone(), None));
+    m.day = Some(tk::tui::msg::DayData {
+        day: days[13].clone(),
+        projects: vec![],
+    });
+    for screen in [Screen::Month, Screen::Day, Screen::Stats] {
+        m.screen = screen;
+        for w in [80u16, 100] {
+            let out = rows(w, 24, |f| m.draw(f));
+            let hints = out.last().unwrap().clone();
+            assert!(
+                hints.chars().count() <= w as usize,
+                "hints overflow at {w} on {screen:?}: {hints}"
+            );
+            // The row that is drawn is the row that was measured: nothing was
+            // silently clipped off the end.
+            let expected = tk::tui::view::chrome::hints_width(m.key_hints_for(w));
+            assert_eq!(
+                hints.chars().count(),
+                expected as usize,
+                "the hint row was cut at {w} on {screen:?}: {hints}"
+            );
+            // Each screen's own way out is always named.
+            let out_key = match screen {
+                Screen::Month => "q quit",
+                _ => "Esc back",
+            };
+            assert!(
+                hints.contains(out_key),
+                "{out_key} missing at {w} on {screen:?}: {hints}"
+            );
+        }
     }
+    // The month screen at the minimum drops the day-type keys but keeps the rest.
+    m.screen = Screen::Month;
+    let hints = rows(80, 24, |f| m.draw(f)).last().unwrap().clone();
+    assert!(hints.contains("c settings"), "{hints}");
+    assert!(hints.contains("? help"), "{hints}");
+    // The day screen names the break split, and `?` spells it out in full.
+    m.screen = Screen::Day;
+    let hints = rows(80, 24, |f| m.draw(f)).last().unwrap().clone();
+    assert!(hints.contains("b break"), "{hints}");
+    assert!(
+        m.help_keys()
+            .iter()
+            .any(|(k, d)| *k == "b" && d.contains("split")),
+        "{:?}",
+        m.help_keys()
+    );
 }
 
 /// A model parked on the statistics screen over the whole of 2026.

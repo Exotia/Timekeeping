@@ -80,7 +80,7 @@ pub struct Model {
 
 /// What a write that touched a session's break should do once the refreshed day
 /// arrives.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitFollowup {
     /// Open the break-split box on the session this entry belongs to.
     Open { date: NaiveDate, entry_id: i64 },
@@ -1158,7 +1158,21 @@ impl Model {
 
     fn on_store(&mut self, reply: StoreReply) {
         match reply {
-            StoreReply::Month(m) => self.month = Some(m),
+            StoreReply::Month(m) => {
+                // A split still waiting for its day is dropped when the month
+                // that comes back cannot hold that day at all — an overnight
+                // session booked on yesterday's date while October is on
+                // screen, say. Without this it would stay armed and spring the
+                // box open on some unrelated refresh later. The day editor's
+                // own date is spared: its reload is still on its way.
+                if let Some(SplitFollowup::Open { date, .. }) = self.split_followup
+                    && self.selected != date
+                    && !m.days.iter().any(|d| d.date == date)
+                {
+                    self.split_followup = None;
+                }
+                self.month = Some(m)
+            }
             StoreReply::Day(d) => {
                 self.day_cursor = self.day_cursor.min(d.day.entries.len().saturating_sub(1));
                 self.day = Some(d);
@@ -1196,7 +1210,7 @@ impl Model {
         // not before: the reply that asked for it arrives while the day on
         // screen is still the one from before the write, which may well hold
         // other entries but not yet the one just booked.
-        if let Some(SplitFollowup::Open { date, entry_id }) = self.split_followup.clone()
+        if let Some(SplitFollowup::Open { date, entry_id }) = self.split_followup
             && self.entries_on(date).iter().any(|e| e.id == entry_id)
         {
             self.split_followup = None;
@@ -1318,7 +1332,9 @@ impl Model {
                 ("a", "add"),
                 ("e", "edit"),
                 ("d", "delete"),
-                ("b", "break split"),
+                // "break split" would take the row to 81 columns, one past the
+                // 80 the UI promises; the `?` help spells the key out in full.
+                ("b", "break"),
                 ("←→", "day type"),
                 ("u", "units"),
                 ("Esc", "back"),
@@ -2693,6 +2709,59 @@ mod tests {
             vec![1, 2]
         );
         assert_eq!(m.split_followup, None);
+    }
+
+    /// A queued split whose day the month on screen cannot hold is dropped: an
+    /// overnight session booked on yesterday's date while another month is up
+    /// must not leave the box armed to spring open on a later refresh.
+    #[test]
+    fn a_queued_split_expires_when_its_day_is_not_in_the_month() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        // The user has walked to October; the clock-out books into September.
+        m.selected = d(2026, 10, 5);
+        m.month = Some(month_data(today, vec![], None));
+        m.update(Msg::Store(StoreReply::Booked {
+            entry_id: 2,
+            date: today,
+            session_projects: 2,
+            deduction: Minutes(48),
+            message: "Clocked out: 12:00–17:00 Beta (+05:00)".into(),
+        }));
+        assert_eq!(
+            m.split_followup,
+            Some(SplitFollowup::Open {
+                date: today,
+                entry_id: 2
+            }),
+            "queued: the day is not in hand yet"
+        );
+        // October comes back, and it holds no September day.
+        let october = MonthData {
+            year: 2026,
+            month: 10,
+            days: vec![Day {
+                date: d(2026, 10, 5),
+                kind: DayKind::Work,
+                entries: vec![],
+            }],
+            ..month_data(today, vec![], None)
+        };
+        m.update(Msg::Store(StoreReply::Month(october)));
+        assert_eq!(m.split_followup, None, "the queued split is dropped");
+        assert!(m.break_split.is_none());
+        // And a later refresh of a month that does hold entries for that day
+        // must not open anything: nothing is waiting any more.
+        m.update(Msg::Store(StoreReply::Month(month_data(
+            today,
+            vec![Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: two_project_day(today),
+            }],
+            None,
+        ))));
+        assert!(m.break_split.is_none());
     }
 
     /// Saving an entry in the day editor is not the moment for a box, but the
