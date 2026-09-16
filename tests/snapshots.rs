@@ -267,9 +267,10 @@ fn stats_screen_80x24_year() {
         out.iter().any(|r| r.contains("total ")),
         "chart footer missing:\n{joined}"
     );
-    // The balance figures sit under the chart, and the projects panel is about
-    // worked time alone — a break deduction beside project hours reads as if the
-    // projects had lost the time.
+    // The chart's footer carries net, target and balance together; the projects
+    // panel below it carries the net time on projects and nothing else — a
+    // target or a balance beside project hours belongs to the day, not to a
+    // project. Both panels name `net`, so they are told apart by position.
     let footer = out
         .iter()
         .find(|r| r.contains("net "))
@@ -280,9 +281,10 @@ fn stats_screen_80x24_year() {
     );
     let projects_footer = out
         .iter()
-        .find(|r| r.contains("worked "))
+        .rev()
+        .find(|r| r.contains("net "))
         .unwrap_or_else(|| panic!("{joined}"));
-    for stray in ["net", "target", "balance"] {
+    for stray in ["target", "balance", "worked", "gross"] {
         assert!(
             !projects_footer.contains(stray),
             "{stray} beside the projects:\n{joined}"

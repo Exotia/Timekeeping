@@ -365,7 +365,9 @@ and vacation remaining right.
 Table columns: Day, Project, Start, End, Gross, Net, Comment. Comment
 flexes; others fixed. Rows:
 
-- Work day with entries: one row per entry; day label only on the first.
+- Work day with entries: one row per entry; day label only on the first, but
+  gross and net on every one — the net is that entry's own share (§5.2 "Net per
+  entry"), and the day's net is read off the week footer and the summary.
 - Work day, past, no entries: red "missing" chip across the project column.
 - Work day, future or today without entries: dimmed dots.
 - Vacation / Flex / Holiday / Sick / Absence: one row, colored kind chip in
@@ -375,8 +377,9 @@ flexes; others fixed. Rows:
 - After each Sunday (or month end): a right-aligned week footer with
   `KW nn  <week balance>  → <running balance>`.
 
-Summary box: one bar per project (hours, share), then
-`target  net  month balance`, then day-kind counts for the month.
+Summary box: one bar per project (net hours, share), then
+`target  net  month balance`, then day-kind counts for the month. The project
+bars are net time, so they add up to the summary's own `net`.
 
 Keys: `↑↓`/`jk` day, `[`/`]` month, `t` today, `Enter` day editor,
 `s` statistics, `i`/`o` clock in/out, `v` `f` `x` `p` set kind
@@ -404,9 +407,9 @@ Range selector: This month, Last month, Quarter, Year. (A Custom range with
 two date inputs was planned for v1 but deferred to a follow-up release.) Body:
 the balance chart, one bar per period of the range, footed by `total`, `best`
 and `worst` and then by `net`, `target` and `balance` — the only place the
-break deduction is shown, because it is only readable next to the balance it
-moves; below it the per-project table with colored bars, hours, share and a
-`worked` total, which shows worked time and nothing else; below that the
+target and the balance are shown, because they are about the day and not about
+any project; below it the per-project table with colored bars, net hours, share
+and a `net` total, which shows time on projects and nothing else; below that the
 day-kind table: vacation used/remaining, sick, flex, holidays, absences,
 missing days. `Esc` back.
 

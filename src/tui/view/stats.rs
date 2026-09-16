@@ -19,7 +19,9 @@ use crate::tui::worker::month_range;
 pub struct StatsView {
     pub from: NaiveDate,
     pub to: NaiveDate,
+    /// (project name, net minutes worked, color index), sorted by minutes desc.
     pub project_totals: Vec<(String, Minutes, u8)>,
+    /// The net time worked in the range, i.e. the sum of `project_totals`.
     pub total: Minutes,
     pub net: Minutes,
     pub target: Minutes,
@@ -241,9 +243,11 @@ pub fn build_stats(
                 v.missing += 1;
             }
         }
-        for e in &day.entries {
-            *totals.entry(e.project.clone()).or_default() += e.duration();
-            v.total += e.duration();
+        // Net per entry: each one carries its share of its session's break
+        // deduction, so the project hours add up to the net that was worked.
+        for (idx, e) in day.entries.iter().enumerate() {
+            *totals.entry(e.project.clone()).or_default() += s.entry_nets[idx];
+            v.total += s.entry_nets[idx];
         }
         if is_working_day(day.date) {
             match day.kind {
@@ -414,9 +418,9 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, fmt: Hour
         footer.push(minutes_span(b.balance, fmt, t));
     }
     lines.push(Line::from(footer));
-    // Net, target and balance belong here and nowhere else: net is gross minus
-    // the break deduction, and a deduction only makes sense read next to the
-    // balance it moves — never beside the hours a project was worked.
+    // Net, target and balance belong together: the target and the balance are
+    // about the day, not about any project, so they are read here next to the
+    // net they move and never beside the hours a project was worked.
     lines.push(Line::from(vec![
         Span::styled("net ", Style::default().fg(t.muted)),
         Span::raw(v.net.fmt_signed(fmt)),
@@ -535,7 +539,7 @@ pub fn draw_stats(
     }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("worked ", Style::default().fg(t.muted)),
+        Span::styled("net ", Style::default().fg(t.muted)),
         Span::raw(v.total.fmt_unsigned(fmt)),
     ]));
     f.render_widget(
@@ -845,8 +849,13 @@ mod tests {
         assert_eq!(v.net - v.target, v.balance_total);
         // A work day before the start date is not a day anybody is missing.
         assert_eq!(v.missing, 1);
-        // What was worked in the range is still what was worked in the range.
-        assert_eq!(v.total, Minutes(2 * 540));
+        // What was worked in the range is still what was worked in the range —
+        // net, so each nine-hour day counts the 492 minutes it earned.
+        assert_eq!(v.total, Minutes(2 * 492));
+        assert_eq!(
+            v.project_totals.iter().map(|p| p.1).sum::<Minutes>(),
+            v.total
+        );
         let rows = render(100, 30, |f| {
             draw_stats(
                 f,
@@ -860,20 +869,22 @@ mod tests {
         let joined = rows.join("\n");
         assert!(contains(&rows, "total -07:24"), "{joined}");
         assert!(contains(&rows, "balance -07:24"), "{joined}");
-        // The deduction lives in the gap between worked and net, so net only ever
-        // shows up next to the balance figures, never beside the project hours.
-        let worked = rows
+        // The projects panel names the net time on projects and nothing else:
+        // the target and the balance belong to the chart. Its footer is the
+        // lower of the two `net` lines on the screen.
+        let projects_footer = rows
             .iter()
-            .find(|r| r.contains("worked "))
+            .rev()
+            .find(|r| r.contains("net "))
             .unwrap_or_else(|| panic!("{joined}"));
-        assert!(worked.contains("18:00"), "{joined}");
-        for stray in ["net", "target", "balance"] {
+        assert!(projects_footer.contains("16:24"), "{joined}");
+        for stray in ["target", "balance", "worked", "gross"] {
             assert!(
-                !worked.contains(stray),
+                !projects_footer.contains(stray),
                 "{stray} beside the projects: {joined}"
             );
         }
-        // …and all three sit under the chart's total line.
+        // Net, target and balance all sit under the chart's total line.
         let footer = rows
             .iter()
             .find(|r| r.contains("net "))
@@ -910,7 +921,7 @@ mod tests {
             "the missing day's bar:\n{joined}"
         );
         assert!(contains(&rows, "total -7.40h"), "the footer:\n{joined}");
-        assert!(contains(&rows, "worked 9.00h"), "the projects:\n{joined}");
+        assert!(contains(&rows, "net 8.20h"), "the projects:\n{joined}");
         assert!(!contains(&rows, "00:24"), "an h:mm leak:\n{joined}");
     }
 
@@ -1141,8 +1152,11 @@ mod tests {
             30,
             RangeKind::ThisMonth,
         );
-        assert_eq!(v.project_totals[0], ("Alpha".to_string(), Minutes(480), 0));
-        assert_eq!(v.total, Minutes(720));
+        // Net per project: Alpha's eight-hour day loses the 48-minute tier and
+        // Beta's four-hour one loses 18.
+        assert_eq!(v.project_totals[0], ("Alpha".to_string(), Minutes(432), 0));
+        assert_eq!(v.project_totals[1], ("Beta".to_string(), Minutes(222), 0));
+        assert_eq!(v.total, Minutes(654));
         assert_eq!(
             (v.vacation_in_range, v.sick, v.flex, v.missing),
             (1, 1, 1, 1)
@@ -1175,7 +1189,8 @@ mod tests {
         });
         assert!(contains(&rows, "2026-09-01 → 2026-09-08"));
         assert!(contains(&rows, "Alpha"));
-        assert!(contains(&rows, "66.7%"));
+        // Alpha's 432 net minutes of the 654 worked in the range.
+        assert!(contains(&rows, "66.1%"));
         assert!(contains(&rows, "vacation"));
         assert!(contains(
             &rows,

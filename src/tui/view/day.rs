@@ -115,7 +115,7 @@ pub fn draw_day(
     );
 
     let header = Row::new(
-        ["", "START", "END", "GROSS", "PROJECT", "COMMENT"].map(|h| {
+        ["", "START", "END", "GROSS", "NET", "PROJECT", "COMMENT"].map(|h| {
             Cell::from(Span::styled(
                 h,
                 Style::default().fg(t.muted).add_modifier(Modifier::BOLD),
@@ -139,6 +139,13 @@ pub fn draw_day(
                 Cell::from(e.start.format("%H:%M").to_string()),
                 Cell::from(e.end.format("%H:%M").to_string()),
                 Cell::from(e.duration().fmt_signed(fmt)),
+                // The entry's share of the day's break deduction is already
+                // taken off here, so the column adds up to the footer's net.
+                Cell::from(minutes_span(
+                    stats.entry_nets.get(i).copied().unwrap_or_default(),
+                    fmt,
+                    t,
+                )),
                 Cell::from(Span::styled(e.project.clone(), Style::default().fg(color))),
                 Cell::from(Span::styled(
                     e.comment.clone(),
@@ -162,6 +169,7 @@ pub fn draw_day(
             Constraint::Length(1),
             Constraint::Length(6),
             Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(18),
             Constraint::Min(10),
@@ -343,12 +351,50 @@ mod tests {
         });
         let joined = rows.join("\n");
         assert!(contains(&rows, "+9.00h"), "the entry's gross:\n{joined}");
+        assert!(contains(&rows, "+8.20h"), "the entry's net:\n{joined}");
         assert!(contains(&rows, "gross +9.00h"), "{joined}");
         assert!(contains(&rows, "break -0.80h"), "{joined}");
         assert!(contains(&rows, "net +8.20h"), "{joined}");
         assert!(contains(&rows, "target -7.80h"), "{joined}");
         assert!(contains(&rows, "day +0.40h"), "{joined}");
         assert!(!contains(&rows, "09:00"), "an h:mm leak:\n{joined}");
+    }
+
+    /// Each entry row carries its own net: the session's deduction is shared
+    /// out over the entries, not hung off the first one.
+    #[test]
+    fn every_entry_row_shows_its_own_net() {
+        let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        // Straight through from 08:00 to 17:00 with a switch at noon: one
+        // nine-hour session losing 48 minutes, 21 off the four-hour morning and
+        // 27 off the five-hour afternoon.
+        let rows = day_rows(date, &[(t(8, 0), t(12, 0)), (t(12, 0), t(17, 0))]);
+        let joined = rows.join("\n");
+        let morning = rows
+            .iter()
+            .find(|r| r.contains("08:00"))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(morning.contains("+04:00"), "its gross:\n{joined}");
+        assert!(morning.contains("+03:39"), "its net:\n{joined}");
+        let afternoon = rows
+            .iter()
+            .find(|r| r.contains("17:00"))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(afternoon.contains("+05:00"), "its gross:\n{joined}");
+        assert!(afternoon.contains("+04:33"), "its net:\n{joined}");
+        // The columns are named, and the net ones sit between gross and project.
+        let header = rows
+            .iter()
+            .find(|r| r.contains("GROSS"))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(
+            header.find("GROSS") < header.find("NET"),
+            "column order:\n{joined}"
+        );
+        assert!(
+            header.find("NET") < header.find("PROJECT"),
+            "column order:\n{joined}"
+        );
     }
 
     #[test]

@@ -22,8 +22,8 @@ use crate::tui::theme::Theme;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowKind {
     /// One time entry of a work day; `first` marks the entry that carries the
-    /// day label / net-of-day cell (subsequent entries of the same day only
-    /// show their own start/end/gross).
+    /// day label (subsequent entries of the same day leave that cell empty).
+    /// Every entry row shows its own gross and its own net.
     Entry { entry_idx: usize, first: bool },
     /// A past weekday with no entries.
     Missing,
@@ -54,7 +54,7 @@ pub struct MonthView {
     pub target: Minutes,
     pub net: Minutes,
     pub balance: Minutes,
-    /// (project name, gross minutes worked, color index), sorted by minutes desc.
+    /// (project name, net minutes worked, color index), sorted by minutes desc.
     pub project_totals: Vec<(String, Minutes, u8)>,
     /// (label, count) e.g. ("vacation", 1) or ("missing", 2).
     pub kind_counts: Vec<(String, u32)>,
@@ -88,8 +88,8 @@ pub fn build_month_view(
             running += s.balance;
             week_balance += s.balance;
         }
-        for e in &day.entries {
-            *totals.entry(e.project.clone()).or_insert(Minutes::ZERO) += e.duration();
+        for (idx, e) in day.entries.iter().enumerate() {
+            *totals.entry(e.project.clone()).or_insert(Minutes::ZERO) += s.entry_nets[idx];
         }
         if day.kind != DayKind::Work {
             *counts.entry(day.kind.as_str()).or_insert(0) += 1;
@@ -167,7 +167,8 @@ pub fn build_month_view(
         i += 1;
     }
 
-    // Project totals use gross entry durations ("hours per project").
+    // Project totals are net: every entry carries its share of its session's
+    // break deduction, so the hours on the projects add up to the month's net.
     let mut project_totals: Vec<(String, Minutes, u8)> = totals
         .into_iter()
         .map(|(name, m)| {
@@ -385,11 +386,7 @@ pub fn draw_table(
                             e.duration().fmt_signed(fmt),
                             Style::default().fg(t.text),
                         )),
-                        Cell::from(if *first {
-                            minutes_span(s.net, fmt, t)
-                        } else {
-                            Span::raw("")
-                        }),
+                        Cell::from(minutes_span(s.entry_nets[*entry_idx], fmt, t)),
                     ];
                     if show_comment {
                         c.push(Cell::from(Span::styled(
@@ -650,9 +647,13 @@ mod tests {
         // day2 vacation and day17 holiday carry no target.
         assert_eq!(v.net, Minutes(582));
         assert_eq!(v.target, Minutes(468 * 9));
-        // Project totals use gross entry durations: Alpha 360, Beta 240.
+        // Project totals are net: Alpha's two three-hour sessions lose nothing
+        // and keep 360, Beta's single four-hour session loses 18 and keeps 222.
         assert_eq!(v.project_totals[0].0, "Alpha");
         assert_eq!(v.project_totals[0].1, Minutes(360));
+        assert_eq!(v.project_totals[1], ("Beta".to_string(), Minutes(222), 1));
+        // Which is the same time the summary's `net` is made of.
+        assert_eq!(v.project_totals.iter().map(|p| p.1).sum::<Minutes>(), v.net);
         assert!(
             v.kind_counts
                 .iter()
@@ -837,6 +838,71 @@ mod tests {
         assert!(!contains(&rows, "09:42"), "an h:mm leak:\n{joined}");
     }
 
+    /// A day worked straight through on two projects: the session's deduction is
+    /// shared out, so each entry row carries its own net and the projects carry
+    /// net time.
+    #[test]
+    fn every_entry_row_shows_its_own_net() {
+        let (mut data, rules, cal) = fixture();
+        let day = data
+            .days
+            .iter_mut()
+            .find(|dd| dd.date == d(2026, 9, 14))
+            .unwrap();
+        day.entries = vec![
+            Entry {
+                id: 2,
+                date: day.date,
+                start: t(8, 0),
+                end: t(12, 0),
+                project: "Alpha".into(),
+                comment: "morning".into(),
+            },
+            Entry {
+                id: 3,
+                date: day.date,
+                start: t(12, 0),
+                end: t(17, 0),
+                project: "Beta".into(),
+                comment: "afternoon".into(),
+            },
+        ];
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        // One nine-hour session losing 48: 21 minutes off the morning, 27 off
+        // the afternoon. Beta also holds the 1st's 222, so it leads.
+        assert_eq!(v.project_totals[0], ("Beta".to_string(), Minutes(495), 1));
+        assert_eq!(v.project_totals[1], ("Alpha".to_string(), Minutes(219), 0));
+        assert_eq!(v.project_totals.iter().map(|p| p.1).sum::<Minutes>(), v.net);
+
+        let th = Theme::dark();
+        let rows = render(100, 30, |f| {
+            draw_table(
+                f,
+                f.area(),
+                &th,
+                &v,
+                &data,
+                d(2026, 9, 14),
+                d(2026, 9, 15),
+                true,
+                HoursFormat::Hm,
+            )
+        });
+        let joined = rows.join("\n");
+        let morning = rows
+            .iter()
+            .find(|r| r.contains("morning"))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(morning.contains("+04:00"), "its gross:\n{joined}");
+        assert!(morning.contains("+03:39"), "its net:\n{joined}");
+        let afternoon = rows
+            .iter()
+            .find(|r| r.contains("afternoon"))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(afternoon.contains("+05:00"), "its gross:\n{joined}");
+        assert!(afternoon.contains("+04:33"), "its net:\n{joined}");
+    }
+
     #[test]
     fn hides_comment_below_90_columns() {
         let (data, rules, cal) = fixture();
@@ -869,7 +935,8 @@ mod tests {
         });
         assert!(contains(&rows, "Alpha"));
         assert!(contains(&rows, "█"));
-        assert!(contains(&rows, "60.0%"));
+        // Alpha's 360 net minutes of the month's 582.
+        assert!(contains(&rows, "61.9%"));
         assert!(contains(&rows, "target"));
         assert!(contains(&rows, "+09:42"));
         assert!(contains(&rows, "vacation 1"));

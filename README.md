@@ -334,15 +334,17 @@ per ISO week for a month, per month for a quarter or a year. Bars grow to the
 right of the zero line when the period is over its target and to the left when
 it is under it, and the line below them sums the range and names its best and
 worst period. A second line under it carries `net`, `target` and `balance` for
-the range: the break deduction is the difference between what you worked and
-your net, so it is only ever shown next to the balance it moves. Days before
+the range: a target and a balance are about your days, not about your projects,
+so they are only ever shown next to the chart they move. Days before
 `start_date` are left out, the same as everywhere else the balance is counted.
 A terminal too short for every bar shows the most recent ones, ending at the
 period today falls in, and marks the cut with a `…` in the panel title.
 
 The panel below it is about work alone: one bar per project with its hours and
-its share of the range, and `worked` — the gross time in the range — under
-them. No deduction, no target, no balance; those belong to the chart.
+its share of the range, and `net` — the net time in the range — under them. The
+hours are net, each entry carrying its share of its session's break, so they add
+up to the `net` on the chart's own footer for the same days. No target, no
+balance; those belong to the chart.
 
 ### Overlays
 
