@@ -66,13 +66,20 @@ fn add_day_and_status_and_export() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "2026-09-14,09:00,15:30,Alpha,note",
+            "date,start,end,project,comment,gross,net",
+        ))
+        // 6:30 gross in one session: 48 minutes off it leaves 5:42 net.
+        .stdout(predicate::str::contains(
+            "2026-09-14,09:00,15:30,Alpha,note,+06:30,+05:42",
         ));
     tk(home)
         .args(["export", "--format", "json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"project\":\"Alpha\""));
+        .stdout(predicate::str::contains("\"project\":\"Alpha\""))
+        .stdout(predicate::str::contains(
+            "\"gross_minutes\":390,\"net_minutes\":342",
+        ));
 }
 
 /// A pause splits the day: each seamless session is charged on its own length.
@@ -116,6 +123,39 @@ fn the_break_deduction_is_charged_per_session() {
         .stdout(predicate::str::contains("today +08:12"));
 }
 
+/// A booked entry reports the net it earned, not just its gross: the session's
+/// break deduction is shared out over the entries of that session.
+#[test]
+fn a_booked_entry_reports_its_own_net() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // On its own, the morning is a four-hour session losing 18 minutes.
+    tk(home)
+        .args(["add", "today", "0800-1200", "-p", "Alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gross +04:00"))
+        .stdout(predicate::str::contains("net +03:42"))
+        .stdout(predicate::str::contains("day net +03:42"));
+    // Straight on at noon: one nine-hour session losing 48 minutes, 21 off the
+    // four-hour morning and 27 off the five-hour afternoon.
+    tk(home)
+        .args(["add", "today", "1200-1700", "-p", "Beta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gross +05:00"))
+        .stdout(predicate::str::contains("net +04:33"))
+        .stdout(predicate::str::contains("day net +08:12"));
+    // And the morning's share is re-read from the session it now belongs to.
+    let shown = tk(home)
+        .args(["export", "--format", "csv"])
+        .assert()
+        .success();
+    let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    assert!(csv.contains("Alpha,,+04:00,+03:39"), "{csv}");
+    assert!(csv.contains("Beta,,+05:00,+04:33"), "{csv}");
+}
+
 #[test]
 fn clock_in_and_out() {
     let dir = tempfile::tempdir().unwrap();
@@ -149,7 +189,8 @@ fn clock_in_and_out() {
         .arg("out")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Beta")); // the project the session was opened on
+        .stdout(predicate::str::contains("Beta")) // the project the session was opened on
+        .stdout(predicate::str::contains("· net "));
     tk(home)
         .arg("out")
         .assert()
@@ -184,6 +225,7 @@ fn clock_in_switch_and_out_are_project_aware() {
         .success();
     let line = String::from_utf8(switched.get_output().stdout.clone()).unwrap();
     assert!(line.contains("Alpha"), "the booked project: {line}");
+    assert!(line.contains("· net "), "the entry's net: {line}");
     assert!(line.contains("now on Beta"), "the new session: {line}");
     // Already on Beta: refused rather than booking a second entry.
     tk(home)
@@ -337,18 +379,19 @@ fn config_hours_switches_the_printed_durations() {
         .args(["add", "2026-09-14", "0900-1530", "-p", "Alpha"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("gross +6.50h"));
+        .stdout(predicate::str::contains("gross +6.50h"))
+        .stdout(predicate::str::contains("net +5.70h"));
     tk(home)
         .arg("status")
         .assert()
         .success()
         .stdout(predicate::str::contains("today +0.00h"));
-    // Exported hours are data, not display: they stay ±HH:MM.
+    // Exported hours are data, not display: both columns stay ±HH:MM.
     tk(home)
         .args(["export", "--format", "csv"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("+06:30"));
+        .stdout(predicate::str::contains("+06:30,+05:42"));
     // Back to h:mm.
     tk(home)
         .args(["config", "--hours", "hm"])

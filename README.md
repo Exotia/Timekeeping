@@ -87,7 +87,7 @@ deduct_minutes = 48
 | `vacation_days_per_year` | `30` | Allowance shown in the title bar and on the statistics screen; remaining = allowance − vacation working days taken in the calendar year. No carry-over. |
 | `week_starts_on` | `"monday"` | `"monday"` or `"sunday"`. Accepted and validated, but it has no effect yet: week rows are grouped by ISO week number, which always begins on Monday. |
 | `theme` | `"dark"` | `"dark"`, `"light"` or `"purple"` (deep purple ground, vivid green/red balances). |
-| `hours_format` | `"hm"` | How durations are written: `"hm"` is `+07:48`, `"decimal"` is `+7.80h`. Applies to the TUI and to everything `tk` prints except `tk export`, whose `gross` column stays `±HH:MM`. `u` in the TUI flips it and writes the new value back here. |
+| `hours_format` | `"hm"` | How durations are written: `"hm"` is `+07:48`, `"decimal"` is `+7.80h`. Applies to the TUI and to everything `tk` prints except `tk export`, whose `gross` and `net` columns stay `±HH:MM`. `u` in the TUI flips it and writes the new value back here. |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as public holidays on top of the built-in Saxon ones (company holidays such as 24 and 31 December). |
 | `[[break_tiers]]` | 180→18, 360→48 | Statutory break table, applied to each seamless session on its own length. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
 | `[theme_overrides]` | empty | Per-role color overrides. |
@@ -171,10 +171,10 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | --- | --- | --- |
 | `tk` | | Open the terminal UI. |
 | `tk in` | `-p, --project NAME`<br>`--force` | Clock in at the current minute on `NAME`. Without `--project` the last used project is taken; on a brand-new database there is none and the command fails. `--force` replaces an existing open clock-in. |
-| `tk switch` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Record the running session and clock in on `NAME` in one step. The new session starts exactly where the recorded entry ends, so the two never overlap. Switching to the project already running is refused. |
-| `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry on the project it was opened with. `--project` books it on another one instead, which is how a clock-in on the wrong project is corrected. |
+| `tk switch` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Record the running session and clock in on `NAME` in one step, reporting the booked entry's gross and net. The new session starts exactly where the recorded entry ends, so the two never overlap. Switching to the project already running is refused. |
+| `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry on the project it was opened with, reporting its gross, its net, the day's net and the new balance. `--project` books it on another one instead, which is how a clock-in on the wrong project is corrected. |
 | `tk status` | | One line for prompts and status bars. Clocked in: the project, the running time, the time you clocked in at, today's net and the overall balance. Otherwise: `not clocked in`, today's net and the overall balance. |
-| `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. |
+| `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. Reports the entry's gross, its net after its share of the break, and the day's net. |
 | `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. |
 | `tk projects` | | Same as `tk projects list`. |
 | `tk projects list` | | List projects; archived ones are marked. |
@@ -372,8 +372,9 @@ tk export --format csv -o hours.csv
 tk export --format json --from 2026-01-01 --to 2026-12-31 -o 2026.json
 ```
 
-The CSV columns are `date,start,end,project,comment,gross`; JSON records carry
-the same fields plus `gross_minutes` as an integer.
+The CSV columns are `date,start,end,project,comment,gross,net`, where `net` is
+the entry's gross minus its share of its session's break deduction; JSON records
+carry the same fields plus `gross_minutes` and `net_minutes` as integers.
 
 ## Public holidays
 

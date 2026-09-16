@@ -6,12 +6,44 @@ use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 use super::{Command, Ctx, ProjectAction};
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    DayKind, HoursFormat, Minutes, TodayCtx, day_stats, parse_date, parse_time_range,
-    provisional_net_for, running_balance, running_minutes,
+    BreakTier, DayKind, Entry, HoursFormat, Minutes, TodayCtx, day_stats, entry_nets, parse_date,
+    parse_time_range, provisional_net_for, running_balance, running_minutes,
 };
 
 pub fn now_local() -> NaiveDateTime {
     Local::now().naive_local()
+}
+
+/// The net of one entry of a day: its gross minus its share of its session's
+/// break deduction.
+///
+/// `entries` is the whole day, because an entry's share depends on the session
+/// it sits in and on the other entries of that session. An entry that is not in
+/// the day at all keeps its gross, which cannot happen for one just written.
+fn net_of(entries: &[Entry], entry: &Entry, tiers: &[BreakTier]) -> Minutes {
+    entries
+        .iter()
+        .position(|e| e.id == entry.id)
+        .and_then(|i| entry_nets(entries, tiers).get(i).copied())
+        .unwrap_or_else(|| entry.duration())
+}
+
+/// Net per entry for a run of entries spanning several days, aligned with
+/// `entries`: sessions live inside one day, so the entries are grouped by date
+/// before their shares are worked out.
+fn nets_by_day(entries: &[Entry], tiers: &[BreakTier]) -> Vec<Minutes> {
+    let mut by_date: std::collections::BTreeMap<NaiveDate, Vec<usize>> = Default::default();
+    for (i, e) in entries.iter().enumerate() {
+        by_date.entry(e.date).or_default().push(i);
+    }
+    let mut out = vec![Minutes::ZERO; entries.len()];
+    for idx in by_date.into_values() {
+        let day: Vec<Entry> = idx.iter().map(|&i| entries[i].clone()).collect();
+        for (k, net) in entry_nets(&day, tiers).into_iter().enumerate() {
+            out[idx[k]] = net;
+        }
+    }
+    out
 }
 
 pub fn balance_as_of(ctx: &Ctx, today: NaiveDate, clocked_in: bool) -> anyhow::Result<Minutes> {
@@ -112,13 +144,19 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             let (e, s) =
                 ctx.store
                     .switch_project(now, &project, comment.as_deref().unwrap_or(""))?;
+            let net = net_of(
+                &ctx.store.entries_on(e.date)?,
+                &e,
+                &ctx.config.rules().tiers,
+            );
             writeln!(
                 out,
-                "Booked {}–{} {} ({}) · now on {} since {}",
+                "Booked {}–{} {} ({}) · net {} · now on {} since {}",
                 e.start.format("%H:%M"),
                 e.end.format("%H:%M"),
                 e.project,
                 e.duration().fmt_signed(f),
+                net.fmt_signed(f),
                 s.project.as_deref().unwrap_or(&project),
                 s.start.format("%H:%M")
             )?;
@@ -130,11 +168,15 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 project.as_deref(),
                 comment.as_deref().unwrap_or(""),
             )?;
+            let rules = ctx.config.rules();
+            let day = ctx
+                .store
+                .days_in(e.date, e.date, &ctx.config.calendar())?
+                .remove(0);
+            let net = net_of(&day.entries, &e, &rules.tiers);
             let stats = day_stats(
-                &ctx.store
-                    .days_in(e.date, e.date, &ctx.config.calendar())?
-                    .remove(0),
-                &ctx.config.rules(),
+                &day,
+                &rules,
                 &ctx.config.calendar(),
                 &TodayCtx {
                     today,
@@ -143,11 +185,12 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             );
             writeln!(
                 out,
-                "Recorded {}–{} {} ({}) · day net {} · balance {}",
+                "Recorded {}–{} {} ({}) · net {} · day net {} · balance {}",
                 e.start.format("%H:%M"),
                 e.end.format("%H:%M"),
                 e.project,
                 e.duration().fmt_signed(f),
+                net.fmt_signed(f),
                 stats.net.fmt_signed(f),
                 balance_as_of(ctx, today, false)?.fmt_signed(f)
             )?;
@@ -166,9 +209,11 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 .store
                 .days_in(date, date, &ctx.config.calendar())?
                 .remove(0);
+            let rules = ctx.config.rules();
+            let net = net_of(&day.entries, &entry, &rules.tiers);
             let st = day_stats(
                 &day,
-                &ctx.config.rules(),
+                &rules,
                 &ctx.config.calendar(),
                 &TodayCtx {
                     today,
@@ -177,12 +222,13 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             );
             writeln!(
                 out,
-                "Added {} {}–{} {} · gross {} · day net {}",
+                "Added {} {}–{} {} · gross {} · net {} · day net {}",
                 date,
                 entry.start.format("%H:%M"),
                 entry.end.format("%H:%M"),
                 entry.project,
                 entry.duration().fmt_signed(f),
+                net.fmt_signed(f),
                 st.net.fmt_signed(f)
             )?;
         }
@@ -314,36 +360,41 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 None => today,
             };
             let entries = ctx.store.entries_in(from, to)?;
+            // Both columns are data, not display: they stay ±HH:MM whatever
+            // `hours_format` says.
+            let nets = nets_by_day(&entries, &rules.tiers);
             let mut text = String::new();
             match format.as_str() {
                 "csv" => {
-                    text.push_str("date,start,end,project,comment,gross\n");
-                    for e in &entries {
+                    text.push_str("date,start,end,project,comment,gross,net\n");
+                    for (e, net) in entries.iter().zip(&nets) {
                         text.push_str(&format!(
-                            "{},{},{},{},{},{}\n",
+                            "{},{},{},{},{},{},{}\n",
                             e.date,
                             e.start.format("%H:%M"),
                             e.end.format("%H:%M"),
                             csv_quote(&e.project),
                             csv_quote(&e.comment),
-                            e.duration()
+                            e.duration(),
+                            net
                         ));
                     }
                 }
                 "json" => {
                     text.push('[');
-                    for (i, e) in entries.iter().enumerate() {
+                    for (i, (e, net)) in entries.iter().zip(&nets).enumerate() {
                         if i > 0 {
                             text.push(',');
                         }
                         text.push_str(&format!(
-                            "{{\"date\":\"{}\",\"start\":\"{}\",\"end\":\"{}\",\"project\":{},\"comment\":{},\"gross_minutes\":{}}}",
+                            "{{\"date\":\"{}\",\"start\":\"{}\",\"end\":\"{}\",\"project\":{},\"comment\":{},\"gross_minutes\":{},\"net_minutes\":{}}}",
                             e.date,
                             e.start.format("%H:%M"),
                             e.end.format("%H:%M"),
                             json_quote(&e.project),
                             json_quote(&e.comment),
-                            e.duration().0
+                            e.duration().0,
+                            net.0
                         ));
                     }
                     text.push_str("]\n");
