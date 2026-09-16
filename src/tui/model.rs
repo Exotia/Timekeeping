@@ -104,10 +104,20 @@ pub struct BreakSplitState {
     pub error: Option<String>,
 }
 
-/// State of the open clock-in overlay: whether submitting it switches the running
-/// session to another project, or opens the first one.
+/// What the open clock-in overlay is about, and so what submitting it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockAction {
+    /// Nothing is running: open the first session.
+    In,
+    /// A session is running: book it and open the next one.
+    Switch,
+    /// A break is on: go back to work, on this project.
+    Resume,
+}
+
+/// State of the open clock-in overlay.
 pub struct ClockPickerState {
-    pub switching: bool,
+    pub action: ClockAction,
 }
 
 /// State of the open entry-form overlay: the raw field values plus the result of
@@ -586,8 +596,19 @@ impl Model {
         names
     }
 
+    /// The projects the resume overlay offers: the one the break is on first, so
+    /// Enter comes back to it, and every other known project after it.
+    fn resume_projects(&self, remembered: Option<&str>) -> Vec<String> {
+        let mut names = self.picker_projects(None);
+        if let Some(p) = remembered {
+            names.retain(|n| n != p);
+            names.insert(0, p.to_string());
+        }
+        names
+    }
+
     /// Mount a fresh clock-in overlay over the month screen and give it focus.
-    fn open_clock_picker(&mut self, title: String, projects: Vec<String>, switching: bool) {
+    fn open_clock_picker(&mut self, title: String, projects: Vec<String>, action: ClockAction) {
         let _ = self.app.umount(&Id::ClockPicker);
         let _ = self.app.mount(
             Id::ClockPicker,
@@ -597,7 +618,7 @@ impl Model {
             ),
             vec![],
         );
-        self.clock_picker = Some(ClockPickerState { switching });
+        self.clock_picker = Some(ClockPickerState { action });
         self.focus(Id::ClockPicker);
     }
 
@@ -751,13 +772,26 @@ impl Model {
                 // the CLI (`tk in`) has always allowed it.
                 let session = self.month.as_ref().and_then(|m| m.session.clone());
                 let current = session.as_ref().and_then(|s| s.project.clone());
-                let title = match (session.is_some(), current.as_deref()) {
-                    (true, Some(p)) => format!("Switch project — currently {p}"),
-                    (true, None) => "Switch project".to_string(),
-                    _ => "Clock in — project".to_string(),
+                let action = match &session {
+                    Some(s) if s.state.is_break() => ClockAction::Resume,
+                    Some(_) => ClockAction::Switch,
+                    None => ClockAction::In,
                 };
-                let projects = self.picker_projects(current.as_deref());
-                self.open_clock_picker(title, projects, session.is_some());
+                let title = match (action, current.as_deref()) {
+                    // Coming back from a break is not a switch: the project on
+                    // the clock is the one being resumed, so it is offered, not
+                    // left out.
+                    (ClockAction::Resume, Some(p)) => format!("Resume — currently {p}"),
+                    (ClockAction::Resume, None) => "Resume — project".to_string(),
+                    (ClockAction::Switch, Some(p)) => format!("Switch project — currently {p}"),
+                    (ClockAction::Switch, None) => "Switch project".to_string(),
+                    (ClockAction::In, _) => "Clock in — project".to_string(),
+                };
+                let projects = match action {
+                    ClockAction::Resume => self.resume_projects(current.as_deref()),
+                    _ => self.picker_projects(current.as_deref()),
+                };
+                self.open_clock_picker(title, projects, action);
             }
             // The overlay only moved its highlight; every `update` repaints anyway.
             Msg::ClockPickerChanged => {}
@@ -772,14 +806,16 @@ impl Model {
                     self.set_status("Pick a project first", true);
                     return;
                 }
-                if state.switching {
-                    self.send(StoreCmd::Switch { project: name });
-                } else {
-                    self.send(StoreCmd::ClockIn(
+                match state.action {
+                    ClockAction::Switch => self.send(StoreCmd::Switch { project: name }),
+                    ClockAction::Resume => self.send(StoreCmd::Resume {
+                        project: Some(name),
+                    }),
+                    ClockAction::In => self.send(StoreCmd::ClockIn(
                         self.today,
                         self.now.with_second(0).unwrap(),
                         name,
-                    ));
+                    )),
                 }
             }
             Msg::ClockOut => {
@@ -791,6 +827,14 @@ impl Model {
                     project: None,
                     comment: String::new(),
                 });
+            }
+            Msg::TakeBreak => {
+                let session = self.month.as_ref().and_then(|m| m.session.as_ref());
+                match session {
+                    None => self.set_status("Not clocked in", true),
+                    Some(s) if s.state.is_break() => self.set_status("Already on break", true),
+                    Some(_) => self.send(StoreCmd::Break),
+                }
             }
             Msg::SetKind(kind) => {
                 let has_entries = self
@@ -1237,15 +1281,17 @@ impl Model {
             balance: m.map(|m| m.balance_total).unwrap_or_default(),
             clock: m.and_then(|m| m.session.as_ref()).map(|s| {
                 // Both ends as date-times: a session opened yesterday keeps counting
-                // instead of freezing at 00:00 when the clock passes midnight.
-                (
-                    s.project.clone().unwrap_or_default(),
-                    s.start.format("%H:%M").to_string(),
-                    crate::core::running_minutes(
+                // instead of freezing at 00:00 when the clock passes midnight. On a
+                // break the same two figures are the pause and when it started.
+                chrome::ClockInfo {
+                    project: s.project.clone().unwrap_or_default(),
+                    since: s.start.format("%H:%M").to_string(),
+                    running: crate::core::running_minutes(
                         NaiveDateTime::new(s.date, s.start),
                         NaiveDateTime::new(self.today, self.now),
                     ),
-                )
+                    on_break: s.state.is_break(),
+                }
             }),
             vacation: m.map(|m| (m.vacation_used_this_year, self.vacation_allowance)),
         }
@@ -1320,8 +1366,9 @@ impl Model {
                 ("Enter", "open day editor"),
                 ("s", "statistics"),
                 ("c", "settings"),
-                ("i", "clock in / switch project"),
+                ("i", "clock in / switch project / resume"),
                 ("o", "clock out"),
+                ("b", "take a break (books work so far)"),
                 ("v", "vacation"),
                 ("f", "flex day"),
                 ("x", "sick"),
@@ -1588,7 +1635,7 @@ mod tests {
         ));
         m.update(Msg::OpenClockPicker);
         let st = m.clock_picker.as_ref().expect("the picker is open");
-        assert!(!st.switching, "nothing is running yet");
+        assert_eq!(st.action, ClockAction::In, "nothing is running yet");
         assert!(m.app.mounted(&Id::ClockPicker));
         // The last used project is offered first, so Enter takes it.
         assert_eq!(
@@ -1625,7 +1672,10 @@ mod tests {
             Some(sess),
         ));
         m.update(Msg::OpenClockPicker);
-        assert!(m.clock_picker.as_ref().expect("open").switching);
+        assert_eq!(
+            m.clock_picker.as_ref().expect("open").action,
+            ClockAction::Switch
+        );
         // The project already running is not on offer.
         assert_eq!(m.picker_projects(Some("Alpha")), vec!["Beta".to_string()]);
         m.update(Msg::ClockPickerSubmit("Beta".into()));
@@ -1648,6 +1698,125 @@ mod tests {
             rx.try_recv().unwrap(),
             StoreCmd::ClockOut { project: None, .. }
         ));
+    }
+
+    /// A session on a break: what the month view has in hand after a `b`.
+    fn paused_session(today: NaiveDate, project: &str) -> crate::store::Session {
+        crate::store::Session {
+            date: today,
+            start: NaiveTime::from_hms_opt(12, 3, 0).unwrap(),
+            project: Some(project.to_string()),
+            state: crate::store::SessionState::Break,
+        }
+    }
+
+    #[test]
+    fn b_takes_a_break_only_while_the_clock_runs() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        // Nothing running: nothing to interrupt.
+        m.month = Some(month_with_projects(today, &["Alpha"], Some("Alpha"), None));
+        m.update(Msg::TakeBreak);
+        assert!(m.status.as_ref().unwrap().1, "shown as an error");
+        assert!(rx.try_recv().is_err());
+
+        // Clocked in and working: `b` books the work so far.
+        let sess = crate::store::Session {
+            date: today,
+            start: NaiveTime::from_hms_opt(8, 12, 0).unwrap(),
+            project: Some("Alpha".into()),
+            state: crate::store::SessionState::Working,
+        };
+        m.month = Some(month_with_projects(
+            today,
+            &["Alpha"],
+            Some("Alpha"),
+            Some(sess),
+        ));
+        m.update(Msg::TakeBreak);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::Break));
+
+        // Already on a break: there is nothing left to book.
+        m.month = Some(month_with_projects(
+            today,
+            &["Alpha"],
+            Some("Alpha"),
+            Some(paused_session(today, "Alpha")),
+        ));
+        m.update(Msg::TakeBreak);
+        assert!(m.status.as_ref().unwrap().0.contains("Already on break"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn on_a_break_i_resumes_and_o_ends_it() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.month = Some(month_with_projects(
+            today,
+            &["Alpha", "Beta"],
+            Some("Alpha"),
+            Some(paused_session(today, "Alpha")),
+        ));
+        m.update(Msg::OpenClockPicker);
+        assert_eq!(
+            m.clock_picker.as_ref().expect("open").action,
+            ClockAction::Resume
+        );
+        // The project the break is on is offered first, so Enter comes back to
+        // it — unlike a switch, which leaves the running project out.
+        assert_eq!(
+            m.resume_projects(Some("Alpha")),
+            vec!["Alpha".to_string(), "Beta".into()]
+        );
+        m.update(Msg::ClockPickerSubmit("Alpha".into()));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::Resume { project: Some(p) } if p == "Alpha"
+        ));
+        // Another project is a resume too, not a switch.
+        m.update(Msg::OpenClockPicker);
+        m.update(Msg::ClockPickerSubmit("Beta".into()));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::Resume { project: Some(p) } if p == "Beta"
+        ));
+        // `o` ends the break: the store knows there is nothing to book.
+        m.update(Msg::ClockOut);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::ClockOut { project: None, .. }
+        ));
+    }
+
+    #[test]
+    fn the_title_bar_says_when_a_break_is_on() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        m.now = NaiveTime::from_hms_opt(12, 15, 0).unwrap();
+        m.month = Some(month_data(
+            today,
+            vec![],
+            Some(paused_session(today, "Alpha")),
+        ));
+        let info = m.title_info();
+        assert_eq!(
+            info.clock,
+            Some(chrome::ClockInfo {
+                project: "Alpha".into(),
+                since: "12:03".into(),
+                running: Minutes(12),
+                on_break: true,
+            })
+        );
+        // The help names the key, even where the hint row has no room for it.
+        assert!(
+            m.help_keys()
+                .iter()
+                .any(|(k, d)| *k == "b" && d.contains("break")),
+            "{:?}",
+            m.help_keys()
+        );
     }
 
     #[test]
@@ -1691,11 +1860,12 @@ mod tests {
         let info = m.title_info();
         assert_eq!(
             info.clock,
-            Some((
-                "Alpha".to_string(),
-                "23:00".to_string(),
-                crate::core::Minutes(120)
-            ))
+            Some(chrome::ClockInfo {
+                project: "Alpha".to_string(),
+                since: "23:00".to_string(),
+                running: crate::core::Minutes(120),
+                on_break: false,
+            })
         );
     }
 

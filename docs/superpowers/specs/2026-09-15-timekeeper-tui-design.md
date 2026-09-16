@@ -390,7 +390,9 @@ DATE accepts `YYYY-MM-DD`, `today`, `yesterday`, or a signed offset like
 Layout, top to bottom: title bar, month table, month summary box, key hints.
 
 Title bar: month name and year left; running balance, live clock-in timer,
-and vacation remaining right.
+and vacation remaining right. While a break is on, the timer reads
+`☕ on break 00:12 (since 12:03) · Alpha` in the `warning` role instead: what
+counts up is the pause, and the project named is the one waiting.
 
 Table columns: Day, Project, Start, End, Gross, Net, Comment. Comment
 flexes; others fixed. Rows:
@@ -412,10 +414,16 @@ Summary box: one bar per project (net hours, share), then
 bars are net time, so they add up to the summary's own `net`.
 
 Keys: `↑↓`/`jk` day, `[`/`]` month, `t` today, `Enter` day editor,
-`s` statistics, `i`/`o` clock in/out, `v` `f` `x` `p` set kind
-(vacation, flex, sick, public holiday) on the selected day with confirm,
+`s` statistics, `i`/`o` clock in/out, `b` take a break, `v` `f` `x` `p` set
+kind (vacation, flex, sick, public holiday) on the selected day with confirm,
 `w` reset to work, `?` help, `q` quit. Kind changes on a day with entries are
 refused with a status message.
+
+`b` books the work so far and pauses the clock on the same project; `i` then
+comes back to work (picker titled `Resume — currently NAME`, that project
+offered first) and `o` ends the break without booking anything more. `b`
+without a clock running, or on a break already, is a status message. The hint
+row has no room for `b` at 80 columns, so it is listed in `?` only.
 
 ### 9.2 Day editor
 

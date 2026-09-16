@@ -255,8 +255,9 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `Enter` | Open the day editor |
 | `s` | Statistics |
 | `c` | Settings overlay: start date, initial balance, daily target, vacation days |
-| `i` | Clock in on a project — while clocked in, switch to another one |
-| `o` | Clock out |
+| `i` | Clock in on a project — while clocked in, switch to another one; on a break, come back to work |
+| `o` | Clock out — on a break, end it |
+| `b` | Take a break: book the work so far and pause the clock on the project |
 | `v` | Mark the day as vacation |
 | `f` | Mark the day as a flex day |
 | `x` | Mark the day as sick |
@@ -279,6 +280,15 @@ while clocked in it is titled "Switch project — currently NAME", leaves that p
 out, and choosing one records the running session and clocks in on the new
 project in a single step. The title bar names the project it is counting for:
 `⏱ Alpha in since 08:12 (03:41)`.
+
+`b` takes a break: the work so far is booked straight away and the clock stays
+on the project, paused. The title bar switches to `☕ on break 00:12 (since
+12:03) · Alpha`, `i` comes back to work — the picker is titled "Resume —
+currently NAME" and offers that project first, so `Enter` is enough, though
+another one is just as good — and `o` ends the break without booking anything
+more. `b` is not on the hint row, which has no room for it at 80 columns; `?`
+lists it. When the session you just booked spans more than one project, the
+[break split](#break-split-overlay) box opens by itself.
 
 ### Day editor
 

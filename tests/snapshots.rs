@@ -167,6 +167,47 @@ fn stats_screen_80x24_year_in_decimal_hours() {
     );
 }
 
+/// The month screen at the documented minimum size while a break is on: the
+/// title bar says so instead of showing a running clock, and nothing spills out
+/// of the row.
+#[test]
+fn month_screen_80x24_on_a_break() {
+    let (today, days) = september_2026();
+    let (mut m, _rx) = model(today);
+    m.selected = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+    m.now = chrono::NaiveTime::from_hms_opt(12, 15, 0).unwrap();
+    m.month = Some(month_data(
+        today,
+        days,
+        Some(tk::store::Session {
+            date: today,
+            start: chrono::NaiveTime::from_hms_opt(12, 3, 0).unwrap(),
+            project: Some("Alpha".into()),
+            state: tk::store::SessionState::Break,
+        }),
+    ));
+    let out = rows(80, 24, |f| m.draw(f));
+    let joined = out.join("\n");
+    assert!(
+        out.iter().all(|r| r.chars().count() <= 80),
+        "a row overflows 80 columns:\n{joined}"
+    );
+    assert!(
+        out[0].contains("on break 00:12 (since 12:03)"),
+        "the title bar:\n{joined}"
+    );
+    assert!(
+        !out[0].contains("in since"),
+        "the running clock leaked into a break:\n{joined}"
+    );
+    // Both panels keep their frames.
+    assert_eq!(
+        out.iter().filter(|r| r.starts_with('╭')).count(),
+        2,
+        "a panel lost its top border:\n{joined}"
+    );
+}
+
 #[test]
 fn key_hints_fit_the_minimum_terminal() {
     let (today, days) = september_2026();

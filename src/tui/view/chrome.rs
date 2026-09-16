@@ -10,11 +10,21 @@ use super::{block, minutes_span};
 use crate::core::{HoursFormat, Minutes};
 use crate::tui::theme::Theme;
 
+/// The open session as the title bar shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockInfo {
+    pub project: String,
+    /// When the clock started running — or, on a break, when it stopped.
+    pub since: String,
+    /// How long it has been running, or how long the break has lasted.
+    pub running: Minutes,
+    pub on_break: bool,
+}
+
 pub struct TitleInfo {
     pub title: String,
     pub balance: Minutes,
-    /// (project, clock-in time "HH:MM", running minutes)
-    pub clock: Option<(String, String, Minutes)>,
+    pub clock: Option<ClockInfo>,
     /// (used, allowance)
     pub vacation: Option<(u32, u32)>,
 }
@@ -24,21 +34,35 @@ pub fn draw_title_bar(f: &mut Frame, area: Rect, t: &Theme, info: &TitleInfo, fm
         Span::styled("balance ", Style::default().fg(t.muted)),
         minutes_span(info.balance, fmt, t),
     ];
-    if let Some((project, since, running)) = &info.clock {
+    if let Some(c) = &info.clock {
         // A session opened before `tk` recorded the project simply has none to name.
-        let project = if project.is_empty() {
-            String::new()
+        let text = if c.on_break {
+            // A break reads the other way round: what is running is the pause,
+            // and the project is the one waiting to be come back to.
+            let project = if c.project.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", c.project)
+            };
+            format!(
+                "☕ on break {} (since {}){project}",
+                c.running.fmt_unsigned(fmt),
+                c.since
+            )
         } else {
-            format!("{project} ")
+            let project = if c.project.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", c.project)
+            };
+            format!(
+                "⏱ {project}in since {} ({})",
+                c.since,
+                c.running.fmt_unsigned(fmt)
+            )
         };
         right.push(Span::raw("   "));
-        right.push(Span::styled(
-            format!(
-                "⏱ {project}in since {since} ({})",
-                running.fmt_unsigned(fmt)
-            ),
-            Style::default().fg(t.warning),
-        ));
+        right.push(Span::styled(text, Style::default().fg(t.warning)));
     }
     if let Some((used, allow)) = info.vacation {
         right.push(Span::raw("   "));
@@ -186,7 +210,12 @@ mod tests {
                 &TitleInfo {
                     title: "SEPTEMBER 2026".into(),
                     balance: Minutes(750),
-                    clock: Some(("Alpha".into(), "08:12".into(), Minutes(221))),
+                    clock: Some(ClockInfo {
+                        project: "Alpha".into(),
+                        since: "08:12".into(),
+                        running: Minutes(221),
+                        on_break: false,
+                    }),
                     vacation: Some((21, 30)),
                 },
                 HoursFormat::Hm,
@@ -210,7 +239,12 @@ mod tests {
                 &TitleInfo {
                     title: "SEPTEMBER 2026".into(),
                     balance: Minutes(750),
-                    clock: Some(("Alpha".into(), "08:12".into(), Minutes(221))),
+                    clock: Some(ClockInfo {
+                        project: "Alpha".into(),
+                        since: "08:12".into(),
+                        running: Minutes(221),
+                        on_break: false,
+                    }),
                     vacation: None,
                 },
                 HoursFormat::Decimal,
@@ -219,6 +253,46 @@ mod tests {
         assert!(contains(&rows, "+12.50h"), "{}", rows.join("\n"));
         assert!(contains(&rows, "(3.68h)"), "{}", rows.join("\n"));
         assert!(!contains(&rows, "12:30"), "{}", rows.join("\n"));
+    }
+
+    /// On a break the title bar says so, in the same place and the same role
+    /// the running clock uses: what is counting is the pause, and the project
+    /// named is the one waiting.
+    #[test]
+    fn title_bar_shows_a_break_instead_of_a_running_clock() {
+        let t = Theme::dark();
+        let rows = render(100, 1, |f| {
+            draw_title_bar(
+                f,
+                f.area(),
+                &t,
+                &TitleInfo {
+                    title: "SEPTEMBER 2026".into(),
+                    balance: Minutes(750),
+                    clock: Some(ClockInfo {
+                        project: "Alpha".into(),
+                        since: "12:03".into(),
+                        running: Minutes(12),
+                        on_break: true,
+                    }),
+                    vacation: None,
+                },
+                HoursFormat::Hm,
+            );
+        });
+        let joined = rows.join("\n");
+        // The cup is a double-width glyph, so the buffer holds a spacer cell
+        // after it: the text is asserted on its own.
+        assert!(contains(&rows, "☕"), "{joined}");
+        assert!(
+            contains(&rows, "on break 00:12 (since 12:03) · Alpha"),
+            "{joined}"
+        );
+        assert!(!contains(&rows, "in since"), "{joined}");
+        assert!(
+            rows.iter().all(|r| r.chars().count() <= 100),
+            "the title bar overflows:\n{joined}"
+        );
     }
 
     #[test]

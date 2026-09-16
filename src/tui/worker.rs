@@ -264,6 +264,31 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 None => StoreReply::Changed("Break ended".into()),
             }
         }
+        StoreCmd::Break => {
+            let e = ctx.store.take_break(now, "")?;
+            let since = ctx
+                .store
+                .session()?
+                .map(|s| s.start)
+                .unwrap_or(e.end)
+                .format("%H:%M")
+                .to_string();
+            let message = format!(
+                "Booked {}–{} {} · on break since {since}",
+                e.start.format("%H:%M"),
+                e.end.format("%H:%M"),
+                e.project
+            );
+            booked(ctx, &e, message)?
+        }
+        StoreCmd::Resume { project } => {
+            let s = ctx.store.resume(now, project.as_deref())?;
+            StoreReply::Changed(format!(
+                "Resumed {} at {}",
+                s.project.as_deref().unwrap_or("the last project"),
+                s.start.format("%H:%M")
+            ))
+        }
         StoreCmd::SetBreakShares(shares) => {
             ctx.store.set_break_shares(&shares)?;
             StoreReply::Changed("Break split saved".into())

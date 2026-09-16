@@ -77,6 +77,8 @@ pub enum Msg {
     ClockPickerSubmit(String),
     ClockPickerCancel,
     ClockOut,
+    /// `b` on the month view: book the work so far and pause the clock.
+    TakeBreak,
     SetKind(DayKind),
     AskConfirm(Confirm),
     ConfirmYes,
@@ -165,6 +167,12 @@ pub enum StoreCmd {
     /// Book the running session and clock in on this project instead.
     Switch {
         project: String,
+    },
+    /// Book the work so far and pause the clock on the same project.
+    Break,
+    /// Go back to work from a break, on `project` or on the remembered one.
+    Resume {
+        project: Option<String>,
     },
     /// Set (or clear, with `None`) the break shares of a session's entries.
     SetBreakShares(Vec<(i64, Option<Minutes>)>),

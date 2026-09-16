@@ -30,6 +30,7 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('c') => Msg::OpenSettings,
             Key::Char('i') => Msg::OpenClockPicker,
             Key::Char('o') => Msg::ClockOut,
+            Key::Char('b') => Msg::TakeBreak,
             Key::Char('v') => Msg::SetKind(DayKind::Vacation),
             Key::Char('f') => Msg::SetKind(DayKind::Flex),
             Key::Char('x') => Msg::SetKind(DayKind::Sick),
@@ -52,5 +53,12 @@ mod tests {
         let mut c = MonthScreen::default();
         let ev = Event::Keyboard(KeyEvent::new(Key::Char('u'), KeyModifiers::NONE));
         assert_eq!(c.on(&ev), Some(Msg::ToggleHours));
+    }
+
+    #[test]
+    fn b_asks_for_a_break() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('b'), KeyModifiers::NONE));
+        assert_eq!(c.on(&ev), Some(Msg::TakeBreak));
     }
 }
