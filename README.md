@@ -288,6 +288,7 @@ project in a single step. The title bar names the project it is counting for:
 | `a` | Add an entry |
 | `e`, `Enter` | Edit the selected entry |
 | `d`, `Delete` | Delete the selected entry (asks first) |
+| `b` | Split this session's break over its entries |
 | `←` / `h`, `→` / `l` | Cycle the day type: work → vacation → flex → holiday → sick → absence |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
@@ -297,6 +298,39 @@ Only `work` days may hold entries; saving one on any other kind reports
 "change the day type to work first" in the status bar. Cycling the day type is
 itself refused — with "Day has entries; delete them first" or "Weekends need no
 day type" — while the day holds entries or falls on a weekend.
+
+The table shows each entry's `GROSS`, its `NET` and the `BREAK` between them:
+what that entry pays towards the break of the session it belongs to. By default
+that is the whole break on the last entry of the session; `b` opens the box that
+changes it.
+
+### Break split (overlay)
+
+`b` on an entry opens **Break split — DATE**: one field per entry of that
+entry's session, labelled with its times, its project and its gross, holding the
+minutes that entry pays towards the session's break.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab`, `↑`, `↓` | Move between the entries |
+| `Enter` | Next entry — on the last one, save |
+| `Ctrl+S` | Save from any field |
+| `Esc` | Cancel |
+
+Values are **minutes** (`18`, `48`), because that is how a statutory break is
+written down. An empty field means "unassigned": that entry is left to the
+default rule, and the placeholder shows what the rule would give it. The footer
+counts what you have handed out — `assigned 00:30 / 00:48` — and refuses a save
+that assigns more than the session actually loses, or more to an entry than it
+is long. Whatever is left unassigned still falls on the last unassigned entry,
+so the entries always add up to the day's net.
+
+The box also opens by itself the moment it is useful: clocking out (or taking a
+break) on a session that spans more than one project and loses a break asks
+straight away how to split it, while the entry is still fresh in mind. A session
+of a single project, or one too short to lose anything, never interrupts. Saving
+an entry in the day editor does not open it either — the status bar says `break
+on last project · press b to split` and leaves the choice to you.
 
 ### Entry form (overlay)
 

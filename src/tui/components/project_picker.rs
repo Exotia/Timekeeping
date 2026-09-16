@@ -20,10 +20,9 @@ use crate::tui::msg::{Msg, UserEvent};
 use crate::tui::theme::Theme;
 use crate::tui::view::chrome::centered;
 
-const FIELDS: [FieldSpec; 1] = [FieldSpec {
-    label: "Project",
-    placeholder: "type to filter, up/down to pick",
-}];
+fn fields() -> Vec<FieldSpec> {
+    vec![FieldSpec::new("Project", "type to filter, up/down to pick")]
+}
 
 /// Width and height of the overlay: one field, the offered projects, the footer.
 const WIDTH: u16 = 64;
@@ -42,7 +41,7 @@ impl ProjectPicker {
     /// project already running).
     pub fn new(title: String, projects: Vec<String>) -> Self {
         Self {
-            form: FieldForm::new(&FIELDS, &[String::new()]),
+            form: FieldForm::new(&fields(), &[String::new()]),
             title,
             projects,
             idx: 0,

@@ -18,24 +18,14 @@ use super::field_form::{FieldForm, FieldFormEvent, FieldSpec};
 use crate::tui::msg::{Msg, SettingsData, UserEvent};
 use crate::tui::theme::Theme;
 
-const FIELDS: [FieldSpec; 4] = [
-    FieldSpec {
-        label: "Start date",
-        placeholder: "2026-09-15",
-    },
-    FieldSpec {
-        label: "Initial balance",
-        placeholder: "+00:00",
-    },
-    FieldSpec {
-        label: "Daily target",
-        placeholder: "07:48",
-    },
-    FieldSpec {
-        label: "Vacation days",
-        placeholder: "30",
-    },
-];
+fn fields() -> Vec<FieldSpec> {
+    vec![
+        FieldSpec::new("Start date", "2026-09-15"),
+        FieldSpec::new("Initial balance", "+00:00"),
+        FieldSpec::new("Daily target", "07:48"),
+        FieldSpec::new("Vacation days", "30"),
+    ]
+}
 
 pub struct SettingsForm {
     form: FieldForm,
@@ -50,7 +40,7 @@ impl SettingsForm {
             initial.vacation,
         ];
         Self {
-            form: FieldForm::new(&FIELDS, &values),
+            form: FieldForm::new(&fields(), &values),
         }
     }
 

@@ -96,6 +96,21 @@ pub enum Msg {
     FormCancel,
     /// A form field changed; carries the whole form so the model can re-validate.
     FormChanged(FormData),
+    // break split
+    /// `b` on an entry, or the box opening by itself after a clock-out: edit the
+    /// break shares of the session `entry_id` belongs to.
+    OpenBreakSplit {
+        date: NaiveDate,
+        entry_id: i64,
+    },
+    /// `b` in the day editor: the same, on the entry under the cursor.
+    DayBreakSplit,
+    /// A field of the break-split box changed; carries every field as typed, so
+    /// the model can re-validate and write the footer.
+    BreakSplitChanged(Vec<String>),
+    /// The shares to save, one per entry of the session.
+    BreakSplitSubmit(Vec<(i64, Option<Minutes>)>),
+    BreakSplitCancel,
     // settings
     OpenSettings,
     /// A settings field changed; carries the whole overlay so the model can re-validate.
@@ -151,6 +166,8 @@ pub enum StoreCmd {
     Switch {
         project: String,
     },
+    /// Set (or clear, with `None`) the break shares of a session's entries.
+    SetBreakShares(Vec<(i64, Option<Minutes>)>),
     Shutdown,
 }
 
@@ -202,6 +219,18 @@ pub enum StoreReply {
     Stats(StatsData),
     /// Success message; empty when there is nothing to show.
     Changed(String),
+    /// A [`StoreCmd::ClockOut`] or [`StoreCmd::Break`] that booked an entry: a
+    /// `Changed` plus what the break-split box needs to decide whether it is
+    /// worth opening — how many projects the booked entry's session spans and
+    /// what that session loses to the break.
+    Booked {
+        entry_id: i64,
+        date: NaiveDate,
+        session_projects: usize,
+        deduction: Minutes,
+        /// What a plain `Changed` would have said.
+        message: String,
+    },
     Failed(String),
 }
 

@@ -13,6 +13,8 @@
 //! the rows) builds its own `Layout` and calls [`FieldForm::panel`],
 //! [`FieldForm::field_view`] and [`FieldForm::footer_widget`] itself.
 
+use std::borrow::Cow;
+
 use tui_realm_stdlib::components::Input;
 use tuirealm::command::{Cmd, CmdResult, Direction, Position};
 use tuirealm::component::Component;
@@ -37,10 +39,26 @@ const WIDTH: u16 = 64;
 const HINTS: &str = " Tab next · Ctrl+S save · Esc cancel ";
 
 /// One labelled input: what it is called and what it shows while empty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Both are `Cow`, so a form with fixed fields still names them with string
+/// literals while one built at runtime (the break split, a field per entry of a
+/// session) can own its labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSpec {
-    pub label: &'static str,
-    pub placeholder: &'static str,
+    pub label: Cow<'static, str>,
+    pub placeholder: Cow<'static, str>,
+}
+
+impl FieldSpec {
+    pub fn new(
+        label: impl Into<Cow<'static, str>>,
+        placeholder: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            placeholder: placeholder.into(),
+        }
+    }
 }
 
 /// What a key did to the form.
@@ -115,9 +133,9 @@ fn build_fields(t: &Theme, specs: &[FieldSpec], values: &[String]) -> Vec<Input>
         .enumerate()
         .map(|(i, spec)| {
             Input::default()
-                .title(spec.label)
+                .title(spec.label.to_string())
                 .value(values.get(i).map(String::as_str).unwrap_or(""))
-                .placeholder(spec.placeholder)
+                .placeholder(spec.placeholder.to_string())
                 .borders(Borders::default().modifiers(t.border).color(t.muted))
                 .foreground(t.text)
                 // Dim the fields that do not have the caret, so the focus ring is obvious.
@@ -329,23 +347,16 @@ mod tests {
     use tuirealm::event::{Key, KeyEvent, KeyModifiers};
     use tuirealm::props::{AttrValue, Attribute};
 
-    const SPECS: [FieldSpec; 3] = [
-        FieldSpec {
-            label: "One",
-            placeholder: "first",
-        },
-        FieldSpec {
-            label: "Two",
-            placeholder: "second",
-        },
-        FieldSpec {
-            label: "Three",
-            placeholder: "third",
-        },
-    ];
+    fn specs() -> Vec<FieldSpec> {
+        vec![
+            FieldSpec::new("One", "first"),
+            FieldSpec::new("Two", "second"),
+            FieldSpec::new("Three", "third"),
+        ]
+    }
 
     fn form() -> FieldForm {
-        FieldForm::new(&SPECS, &["".to_string(), "".into(), "".into()])
+        FieldForm::new(&specs(), &["".to_string(), "".into(), "".into()])
     }
 
     fn key(k: Key) -> KeyEvent {

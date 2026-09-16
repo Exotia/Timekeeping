@@ -22,8 +22,8 @@ use super::view::chrome;
 use super::worker::Worker;
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    Entry, HolidayCalendar, HoursFormat, Minutes, Rules, check_overlap, check_range, parse_date,
-    parse_time, session_deduction,
+    Entry, HolidayCalendar, HoursFormat, Minutes, Rules, check_overlap, check_range, deduction,
+    entry_nets, parse_date, parse_time, session_deduction, session_members,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +71,37 @@ pub struct Model {
     /// session, not to a range: walking to another period keeps the view the
     /// reader asked for.
     pub chart_mode: ChartMode,
+    /// What to do about the break split once the store has answered: the box
+    /// needs the day the entry landed in, and that day is only in hand after
+    /// the refresh the write triggers.
+    pub split_followup: Option<SplitFollowup>,
+    pub break_split: Option<BreakSplitState>,
+}
+
+/// What a write that touched a session's break should do once the refreshed day
+/// arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitFollowup {
+    /// Open the break-split box on the session this entry belongs to.
+    Open { date: NaiveDate, entry_id: i64 },
+    /// Only say where the break went and which key changes it: a day-editor
+    /// edit is not the moment to put a box in the user's way.
+    Hint,
+}
+
+/// State of the open break-split box: the session it is about, and the fields
+/// as typed.
+pub struct BreakSplitState {
+    pub date: NaiveDate,
+    /// The entries of the session, in clock order; every vector below is
+    /// aligned with it.
+    pub session_entry_ids: Vec<i64>,
+    pub deduction: Minutes,
+    pub grosses: Vec<Minutes>,
+    /// What each row is called, so an error can name the entry it is about.
+    pub labels: Vec<String>,
+    pub values: Vec<String>,
+    pub error: Option<String>,
 }
 
 /// State of the open clock-in overlay: whether submitting it switches the running
@@ -190,6 +221,68 @@ pub fn validate_form(
     ))
 }
 
+/// Read the break-split fields back as shares, or say why they are not usable.
+///
+/// The rules are the ones the core allocation cannot express for the user: a
+/// share has to be a number of minutes, no larger than the entry it sits on,
+/// and the assigned shares of a session may not come to more than that session
+/// actually loses. Everything left unassigned falls to the default rule, so an
+/// empty box is always valid.
+pub fn validate_break_split(
+    values: &[String],
+    labels: &[String],
+    grosses: &[Minutes],
+    deduction: Minutes,
+    f: HoursFormat,
+) -> Result<Vec<Option<Minutes>>, String> {
+    let named = |i: usize| -> String {
+        labels
+            .get(i)
+            .map(|l| l.split("  ").next().unwrap_or(l).to_string())
+            .unwrap_or_else(|| format!("entry {}", i + 1))
+    };
+    let mut shares = Vec::with_capacity(values.len());
+    for (i, v) in values.iter().enumerate() {
+        let share =
+            components::break_form::parse_share(v).map_err(|e| format!("{}: {e}", named(i)))?;
+        if let Some(share) = share
+            && let Some(gross) = grosses.get(i)
+            && share > *gross
+        {
+            return Err(format!(
+                "{}: at most {} minutes — that is all it is long",
+                named(i),
+                gross.0
+            ));
+        }
+        shares.push(share);
+    }
+    let assigned: Minutes = shares.iter().flatten().copied().sum();
+    if assigned > deduction {
+        return Err(format!(
+            "assigned {} of {} — more than this session's break",
+            assigned.fmt_unsigned(f),
+            deduction.fmt_unsigned(f)
+        ));
+    }
+    Ok(shares)
+}
+
+/// The footer of a break-split box that validates: how much of the deduction
+/// has been handed out by hand. The rest falls to the default rule.
+pub fn break_split_footer(
+    shares: &[Option<Minutes>],
+    deduction: Minutes,
+    f: HoursFormat,
+) -> String {
+    let assigned: Minutes = shares.iter().flatten().copied().sum();
+    format!(
+        "assigned {} / {}",
+        assigned.fmt_unsigned(f),
+        deduction.fmt_unsigned(f)
+    )
+}
+
 pub const STATUS_TTL: Duration = Duration::from_secs(5);
 
 impl Model {
@@ -298,6 +391,174 @@ impl Model {
         self.settings = None;
         let _ = self.app.umount(&Id::Settings);
         self.focus_screen();
+    }
+
+    /// The entries of `date` as the model last saw them: the day editor's own
+    /// day when that is the one asked for, otherwise the month it is drawing.
+    fn entries_on(&self, date: NaiveDate) -> Vec<Entry> {
+        if let Some(d) = self.day.as_ref().filter(|d| d.day.date == date) {
+            return d.day.entries.clone();
+        }
+        self.month
+            .as_ref()
+            .and_then(|m| m.days.iter().find(|d| d.date == date))
+            .map(|d| d.entries.clone())
+            .unwrap_or_default()
+    }
+
+    /// Open the break-split box on the session `entry_id` belongs to.
+    ///
+    /// Everything the box shows is read off the day: which entries share the
+    /// session, what that session loses, what each entry pays now, and what the
+    /// default rule would give it. A session with nothing to split says so in
+    /// the status bar instead of opening an empty box.
+    fn open_break_split(&mut self, date: NaiveDate, entry_id: i64) {
+        let entries = self.entries_on(date);
+        let intervals: Vec<(i32, i32)> = entries.iter().map(Entry::interval).collect();
+        let Some(group) = session_members(&intervals)
+            .into_iter()
+            .find(|g| g.iter().any(|&i| entries[i].id == entry_id))
+        else {
+            self.set_status("That entry is not on screen any more", true);
+            return;
+        };
+        let span = {
+            let a = group.iter().map(|&i| intervals[i].0).min().unwrap_or(0);
+            let b = group.iter().map(|&i| intervals[i].1).max().unwrap_or(0);
+            b - a
+        };
+        let ded = deduction(Minutes(span), &self.rules.tiers);
+        if ded.0 == 0 {
+            self.set_status("This session is too short to lose a break", false);
+            return;
+        }
+        if group.len() < 2 {
+            self.set_status("One entry in this session: the whole break is on it", false);
+            return;
+        }
+        let session: Vec<Entry> = group.iter().map(|&i| entries[i].clone()).collect();
+        // What the default rule alone would give each entry, as the placeholder:
+        // the box shows what it is about to do, not only what was typed.
+        let unassigned: Vec<Entry> = session
+            .iter()
+            .cloned()
+            .map(|e| Entry {
+                break_share: None,
+                ..e
+            })
+            .collect();
+        let defaults: Vec<Minutes> = entry_nets(&unassigned, &self.rules.tiers)
+            .iter()
+            .zip(&unassigned)
+            .map(|(net, e)| e.duration() - *net)
+            .collect();
+        let fields: Vec<components::break_form::SplitField> = session
+            .iter()
+            .enumerate()
+            .map(|(k, e)| components::break_form::SplitField {
+                entry_id: e.id,
+                label: format!(
+                    "{}–{}  {}  ({})",
+                    e.start.format("%H:%M"),
+                    e.end.format("%H:%M"),
+                    e.project,
+                    e.duration().fmt_signed(self.hours)
+                ),
+                value: e.break_share.map(|m| m.0.to_string()).unwrap_or_default(),
+                placeholder: defaults[k].0.to_string(),
+            })
+            .collect();
+        let _ = self.app.umount(&Id::BreakSplit);
+        let _ = self.app.mount(
+            Id::BreakSplit,
+            Box::new(
+                components::break_form::BreakSplitForm::new(
+                    format!("Break split — {date}"),
+                    &fields,
+                )
+                .with_theme(&self.theme),
+            ),
+            vec![],
+        );
+        self.break_split = Some(BreakSplitState {
+            date,
+            session_entry_ids: session.iter().map(|e| e.id).collect(),
+            deduction: ded,
+            grosses: session.iter().map(Entry::duration).collect(),
+            labels: fields.iter().map(|f| f.label.clone()).collect(),
+            values: fields.iter().map(|f| f.value.clone()).collect(),
+            error: None,
+        });
+        // A box that only shows what is already stored has nothing to complain
+        // about yet.
+        self.refresh_break_split(false);
+        self.focus(Id::BreakSplit);
+    }
+
+    fn close_break_split(&mut self) {
+        self.break_split = None;
+        let _ = self.app.umount(&Id::BreakSplit);
+        self.focus_screen();
+    }
+
+    /// Re-validate the open break-split box and push its footer line back in.
+    fn refresh_break_split(&mut self, show_error: bool) {
+        let Some(st) = &self.break_split else { return };
+        let (error, footer) = match validate_break_split(
+            &st.values,
+            &st.labels,
+            &st.grosses,
+            st.deduction,
+            self.hours,
+        ) {
+            Ok(shares) => (
+                None,
+                Some(break_split_footer(&shares, st.deduction, self.hours)),
+            ),
+            Err(e) => (Some(e), None),
+        };
+        let error = if show_error { error } else { None };
+        let (text, is_error) = match (&error, &footer) {
+            (Some(e), _) => (e.clone(), true),
+            (None, Some(f)) => (f.clone(), false),
+            _ => (String::new(), false),
+        };
+        if let Some(st) = &mut self.break_split {
+            st.error = error;
+        }
+        let _ = self
+            .app
+            .attr(&Id::BreakSplit, Attribute::Text, AttrValue::String(text));
+        let _ = self.app.attr(
+            &Id::BreakSplit,
+            Attribute::Custom(components::form::ERROR_FLAG),
+            AttrValue::Flag(is_error),
+        );
+    }
+
+    /// Whether the session `entry_id` sits in spans more than one project and
+    /// loses a break at all — the two conditions that make a split worth
+    /// offering. `entries` is the whole day.
+    fn split_is_worth_offering(&self, entries: &[Entry], entry_id: i64) -> bool {
+        let intervals: Vec<(i32, i32)> = entries.iter().map(Entry::interval).collect();
+        let Some(group) = session_members(&intervals)
+            .into_iter()
+            .find(|g| g.iter().any(|&i| entries[i].id == entry_id))
+        else {
+            return false;
+        };
+        let span = {
+            let a = group.iter().map(|&i| intervals[i].0).min().unwrap_or(0);
+            let b = group.iter().map(|&i| intervals[i].1).max().unwrap_or(0);
+            b - a
+        };
+        if deduction(Minutes(span), &self.rules.tiers).0 == 0 {
+            return false;
+        }
+        let mut projects: Vec<&str> = group.iter().map(|&i| entries[i].project.as_str()).collect();
+        projects.sort_unstable();
+        projects.dedup();
+        projects.len() > 1
     }
 
     /// The projects the clock-in overlay offers: the last used one first, so it is
@@ -591,6 +852,49 @@ impl Model {
                     self.focus_screen()
                 }
             }
+            // --- break split ---
+            Msg::OpenBreakSplit { date, entry_id } => self.open_break_split(date, entry_id),
+            Msg::DayBreakSplit => {
+                let Some(d) = &self.day else { return };
+                let Some(e) = d.day.entries.get(self.day_cursor) else {
+                    self.set_status("No entry to split", true);
+                    return;
+                };
+                let (date, id) = (d.day.date, e.id);
+                self.open_break_split(date, id);
+            }
+            Msg::BreakSplitChanged(values) => {
+                if let Some(st) = &mut self.break_split {
+                    st.values = values;
+                }
+                self.refresh_break_split(true);
+            }
+            Msg::BreakSplitCancel => self.close_break_split(),
+            Msg::BreakSplitSubmit(shares) => {
+                let Some(st) = &mut self.break_split else {
+                    return;
+                };
+                // Read the submitted shares back as the fields they came from,
+                // so one validator covers both a keystroke and a save.
+                st.values = shares
+                    .iter()
+                    .map(|(_, m)| m.map(|m| m.0.to_string()).unwrap_or_default())
+                    .collect();
+                let st = self.break_split.as_ref().expect("just borrowed");
+                match validate_break_split(
+                    &st.values,
+                    &st.labels,
+                    &st.grosses,
+                    st.deduction,
+                    self.hours,
+                ) {
+                    Err(_) => self.refresh_break_split(true),
+                    Ok(_) => {
+                        self.send(StoreCmd::SetBreakShares(shares));
+                        self.close_break_split();
+                    }
+                }
+            }
             // --- settings overlay ---
             Msg::OpenSettings => self.open_settings(),
             Msg::SettingsChanged(data) => {
@@ -758,6 +1062,29 @@ impl Model {
                     Ok((start, end, ..)) => {
                         let project = data.project.trim().to_string();
                         let comment = data.comment.trim().to_string();
+                        // The day as saving this form will leave it: if that puts
+                        // a break on a session of several projects, say so once
+                        // the store has written it.
+                        let this = Entry {
+                            id: data.id.unwrap_or(i64::MIN),
+                            date: day.day.date,
+                            start,
+                            end,
+                            project: project.clone(),
+                            comment: comment.clone(),
+                            break_share: None,
+                        };
+                        let saved: Vec<Entry> = day
+                            .day
+                            .entries
+                            .iter()
+                            .filter(|e| Some(e.id) != data.id)
+                            .cloned()
+                            .chain(std::iter::once(this.clone()))
+                            .collect();
+                        self.split_followup = self
+                            .split_is_worth_offering(&saved, this.id)
+                            .then_some(SplitFollowup::Hint);
                         match data.id {
                             None => {
                                 self.send(StoreCmd::AddEntry {
@@ -797,12 +1124,45 @@ impl Model {
                 if !msg.is_empty() {
                     self.set_status(msg, false);
                 }
-                self.load_month();
-                if self.screen == Screen::Day {
-                    self.send(StoreCmd::LoadDay(self.selected));
+                if self.split_followup == Some(SplitFollowup::Hint) {
+                    self.split_followup = None;
+                    self.set_status("break on last project · press b to split", false);
                 }
+                self.reload_after_write();
+            }
+            StoreReply::Booked {
+                entry_id,
+                date,
+                session_projects,
+                deduction,
+                message,
+            } => {
+                self.set_status(message, false);
+                // Worth asking about only when there is a break to split and
+                // more than one project it could fall on. The box itself needs
+                // the day the entry landed in, which the refresh brings.
+                if session_projects > 1 && deduction.0 > 0 {
+                    self.split_followup = Some(SplitFollowup::Open { date, entry_id });
+                }
+                self.reload_after_write();
             }
             StoreReply::Failed(e) => self.set_status(e, true),
+        }
+        // A box waiting for its day opens as soon as that day is in hand.
+        if let Some(SplitFollowup::Open { date, entry_id }) = self.split_followup.clone()
+            && !self.entries_on(date).is_empty()
+        {
+            self.split_followup = None;
+            self.open_break_split(date, entry_id);
+        }
+    }
+
+    /// Reload what a write just changed: the month always, the day editor's own
+    /// day when it is the screen being looked at.
+    fn reload_after_write(&mut self) {
+        self.load_month();
+        if self.screen == Screen::Day {
+            self.send(StoreCmd::LoadDay(self.selected));
         }
     }
 
@@ -811,6 +1171,7 @@ impl Model {
         let form_open = self.form.is_some();
         let settings_open = self.settings.is_some();
         let picker_open = self.clock_picker.is_some();
+        let split_open = self.break_split.is_some();
         let _ = term.draw(|f| {
             self.draw(f);
             let area = f.area();
@@ -822,6 +1183,9 @@ impl Model {
             }
             if picker_open {
                 self.app.view(&Id::ClockPicker, f, area);
+            }
+            if split_open {
+                self.app.view(&Id::BreakSplit, f, area);
             }
         });
         self.terminal = Some(term);
@@ -905,6 +1269,7 @@ impl Model {
                 ("a", "add"),
                 ("e", "edit"),
                 ("d", "delete"),
+                ("b", "break split"),
                 ("←→", "day type"),
                 ("u", "units"),
                 ("Esc", "back"),
@@ -970,6 +1335,7 @@ impl Model {
                 ("a", "add entry"),
                 ("e", "edit entry"),
                 ("d", "delete entry"),
+                ("b", "split this session's break"),
                 ("← →", "change day type"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
@@ -1062,6 +1428,8 @@ pub mod testing {
             hours: HoursFormat::Hm,
             stats_anchor: today,
             chart_mode: ChartMode::default(),
+            split_followup: None,
+            break_split: None,
         };
         (m, rx)
     }
@@ -1801,6 +2169,395 @@ mod tests {
             rx.try_recv().unwrap(),
             StoreCmd::SetKind(_, DayKind::Work)
         ));
+    }
+
+    /// A day worked straight through on two projects, as the day editor and the
+    /// month both hold it: one nine-hour session losing 48 minutes.
+    fn two_project_day(today: NaiveDate) -> Vec<Entry> {
+        let t = |h| NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        vec![
+            Entry {
+                id: 1,
+                date: today,
+                start: t(8),
+                end: t(12),
+                project: "Alpha".into(),
+                comment: "morning".into(),
+                break_share: None,
+            },
+            Entry {
+                id: 2,
+                date: today,
+                start: t(12),
+                end: t(17),
+                project: "Beta".into(),
+                comment: "afternoon".into(),
+                break_share: None,
+            },
+        ]
+    }
+
+    fn day_screen_with(m: &mut Model, today: NaiveDate, entries: Vec<Entry>) {
+        m.screen = Screen::Day;
+        m.day = Some(crate::tui::msg::DayData {
+            day: Day {
+                date: today,
+                kind: DayKind::Work,
+                entries,
+            },
+            projects: vec![],
+        });
+    }
+
+    #[test]
+    fn validate_break_split_checks_the_minutes_the_caps_and_the_total() {
+        let labels = vec![
+            "08:00–12:00  Alpha  (+04:00)".to_string(),
+            "12:00–17:00  Beta  (+05:00)".to_string(),
+        ];
+        let grosses = vec![Minutes(240), Minutes(300)];
+        let ded = Minutes(48);
+        let v = |a: &str, b: &str| vec![a.to_string(), b.to_string()];
+        let ok = |vals: Vec<String>| {
+            validate_break_split(&vals, &labels, &grosses, ded, HoursFormat::Hm).unwrap()
+        };
+        // An empty box is the default rule, and is always valid.
+        assert_eq!(ok(v("", "")), vec![None, None]);
+        assert_eq!(ok(v("30", "")), vec![Some(Minutes(30)), None]);
+        assert_eq!(
+            ok(v("30", "18")),
+            vec![Some(Minutes(30)), Some(Minutes(18))]
+        );
+        // A zero is a share, not an absence of one.
+        assert_eq!(ok(v("0", "")), vec![Some(Minutes::ZERO), None]);
+        let err = |vals: Vec<String>| {
+            validate_break_split(&vals, &labels, &grosses, ded, HoursFormat::Hm).unwrap_err()
+        };
+        // Not minutes at all, and the error names the entry it is about.
+        let e = err(v("", "half an hour"));
+        assert!(e.contains("12:00–17:00"), "{e}");
+        assert!(e.contains("not a number of minutes"), "{e}");
+        assert!(err(v("-5", "")).contains("08:00–12:00"));
+        assert!(err(v("0:30", "")).contains("08:00–12:00"));
+        // More than the entry is long, and more than the session loses.
+        let e = err(v("300", ""));
+        assert!(e.contains("at most 240"), "{e}");
+        let e = err(v("30", "30"));
+        assert!(e.contains("assigned 01:00 of 00:48"), "{e}");
+        assert!(e.contains("more than this session's break"), "{e}");
+        // The footer says how much has been handed out by hand.
+        assert_eq!(
+            break_split_footer(&ok(v("30", "")), ded, HoursFormat::Hm),
+            "assigned 00:30 / 00:48"
+        );
+        assert_eq!(
+            break_split_footer(&ok(v("", "")), ded, HoursFormat::Hm),
+            "assigned 00:00 / 00:48"
+        );
+    }
+
+    #[test]
+    fn b_opens_the_break_split_on_the_session_of_the_selected_entry() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        day_screen_with(&mut m, today, two_project_day(today));
+        // The day editor's `b` is what asks for it.
+        assert_eq!(
+            components::day::DayScreen::default().on(&tuirealm::event::Event::Keyboard(
+                tuirealm::event::KeyEvent::new(
+                    tuirealm::event::Key::Char('b'),
+                    tuirealm::event::KeyModifiers::NONE
+                )
+            )),
+            Some(Msg::DayBreakSplit)
+        );
+        m.update(Msg::DayBreakSplit);
+        let st = m.break_split.as_ref().expect("the box is open");
+        // Both entries of the session, in clock order, whichever one the cursor
+        // was on, and the session's own deduction.
+        assert_eq!(st.session_entry_ids, vec![1, 2]);
+        assert_eq!(st.deduction, Minutes(48));
+        assert_eq!(st.grosses, vec![Minutes(240), Minutes(300)]);
+        assert_eq!(st.values, vec![String::new(), String::new()]);
+        assert_eq!(st.labels[0], "08:00–12:00  Alpha  (+04:00)");
+        assert_eq!(st.error, None, "a box that only shows the stored shares");
+        assert!(m.app.mounted(&Id::BreakSplit));
+        // Saving is the store's business, and it names the entries.
+        m.update(Msg::BreakSplitSubmit(vec![
+            (1, Some(Minutes(30))),
+            (2, None),
+        ]));
+        assert!(m.break_split.is_none(), "saving closes the box");
+        assert!(!m.app.mounted(&Id::BreakSplit));
+        match rx.try_recv().unwrap() {
+            StoreCmd::SetBreakShares(shares) => {
+                assert_eq!(shares, vec![(1, Some(Minutes(30))), (2, None)]);
+            }
+            other => panic!("expected SetBreakShares, got {other:?}"),
+        }
+
+        // A share already stored is what the box opens on.
+        let mut entries = two_project_day(today);
+        entries[0].break_share = Some(Minutes(30));
+        day_screen_with(&mut m, today, entries);
+        m.update(Msg::DayBreakSplit);
+        assert_eq!(
+            m.break_split.as_ref().unwrap().values,
+            vec!["30".to_string(), String::new()]
+        );
+        // Esc closes it without sending anything.
+        m.update(Msg::BreakSplitCancel);
+        assert!(m.break_split.is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_session_with_nothing_to_split_says_so_instead_of_opening() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let t = |h| NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        // One entry is one session: the whole break is on it, so there is
+        // nothing to share out.
+        day_screen_with(
+            &mut m,
+            today,
+            vec![Entry {
+                id: 1,
+                date: today,
+                start: t(8),
+                end: t(17),
+                project: "Alpha".into(),
+                comment: String::new(),
+                break_share: None,
+            }],
+        );
+        m.update(Msg::DayBreakSplit);
+        assert!(m.break_split.is_none());
+        assert!(
+            m.status
+                .as_ref()
+                .unwrap()
+                .0
+                .contains("whole break is on it"),
+            "{:?}",
+            m.status
+        );
+        // A session under the first tier loses nothing to split.
+        day_screen_with(
+            &mut m,
+            today,
+            vec![
+                Entry {
+                    id: 1,
+                    date: today,
+                    start: t(8),
+                    end: t(9),
+                    project: "Alpha".into(),
+                    comment: String::new(),
+                    break_share: None,
+                },
+                Entry {
+                    id: 2,
+                    date: today,
+                    start: t(9),
+                    end: t(10),
+                    project: "Beta".into(),
+                    comment: String::new(),
+                    break_share: None,
+                },
+            ],
+        );
+        m.update(Msg::DayBreakSplit);
+        assert!(m.break_split.is_none());
+        assert!(
+            m.status.as_ref().unwrap().0.contains("too short"),
+            "{:?}",
+            m.status
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn over_assigning_the_break_is_refused_in_the_footer() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        day_screen_with(&mut m, today, two_project_day(today));
+        m.update(Msg::DayBreakSplit);
+        m.update(Msg::BreakSplitChanged(vec![
+            "60".to_string(),
+            "60".to_string(),
+        ]));
+        let err = m.break_split.as_ref().unwrap().error.clone().unwrap();
+        assert!(err.contains("more than this session's break"), "{err}");
+        // And a submit of the same figures is refused too: the box stays open
+        // and nothing reaches the store.
+        m.update(Msg::BreakSplitSubmit(vec![
+            (1, Some(Minutes(60))),
+            (2, Some(Minutes(60))),
+        ]));
+        assert!(m.break_split.is_some(), "an invalid save keeps it open");
+        assert!(rx.try_recv().is_err());
+        // Bringing it back inside the deduction saves.
+        m.update(Msg::BreakSplitSubmit(vec![
+            (1, Some(Minutes(24))),
+            (2, Some(Minutes(24))),
+        ]));
+        assert!(m.break_split.is_none());
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::SetBreakShares(_)
+        ));
+    }
+
+    /// The reply a clock-out sends back carries what the box needs to decide
+    /// whether to open itself: a break to split, and more than one project it
+    /// could fall on.
+    #[test]
+    fn a_multi_project_clock_out_opens_the_box_by_itself() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        m.month = Some(month_data(
+            today,
+            vec![Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: two_project_day(today),
+            }],
+            None,
+        ));
+        m.update(Msg::Store(StoreReply::Booked {
+            entry_id: 2,
+            date: today,
+            session_projects: 2,
+            deduction: Minutes(48),
+            message: "Clocked out: 12:00–17:00 Beta (+05:00)".into(),
+        }));
+        let st = m.break_split.as_ref().expect("the box opened by itself");
+        assert_eq!(st.session_entry_ids, vec![1, 2]);
+        assert_eq!(st.deduction, Minutes(48));
+        // The clock-out still says what it booked.
+        assert_eq!(
+            m.status.as_ref().unwrap().0,
+            "Clocked out: 12:00–17:00 Beta (+05:00)"
+        );
+        // …and the month was reloaded, as after any write.
+        assert!(
+            rx.try_iter()
+                .any(|c| matches!(c, StoreCmd::LoadMonth { .. }))
+        );
+        m.update(Msg::BreakSplitCancel);
+
+        // One project in the session: nothing to ask about.
+        m.update(Msg::Store(StoreReply::Booked {
+            entry_id: 2,
+            date: today,
+            session_projects: 1,
+            deduction: Minutes(48),
+            message: "Clocked out: 12:00–17:00 Beta (+05:00)".into(),
+        }));
+        assert!(m.break_split.is_none());
+        assert_eq!(m.split_followup, None);
+        // Nor when the session loses nothing.
+        m.update(Msg::Store(StoreReply::Booked {
+            entry_id: 2,
+            date: today,
+            session_projects: 2,
+            deduction: Minutes::ZERO,
+            message: "Clocked out: 12:00–17:00 Beta (+05:00)".into(),
+        }));
+        assert!(m.break_split.is_none());
+    }
+
+    /// Saving an entry in the day editor is not the moment for a box, but the
+    /// status bar says where the break went and which key moves it.
+    #[test]
+    fn saving_an_entry_hints_at_the_split() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        let entries = two_project_day(today);
+        day_screen_with(&mut m, today, vec![entries[0].clone()]);
+        // A second project straight on from noon: the session now spans two.
+        m.update(Msg::FormSubmit(FormData {
+            id: None,
+            start: "1200".into(),
+            end: "1700".into(),
+            project: "Beta".into(),
+            comment: String::new(),
+        }));
+        assert_eq!(m.split_followup, Some(SplitFollowup::Hint));
+        m.update(Msg::Store(StoreReply::Changed(
+            "Added 12:00–17:00 Beta".into(),
+        )));
+        assert_eq!(
+            m.status.as_ref().unwrap().0,
+            "break on last project · press b to split"
+        );
+        assert_eq!(m.split_followup, None, "the hint is shown once");
+        assert!(m.break_split.is_none(), "no box in the way");
+
+        // An entry whose session stays on one project says nothing.
+        day_screen_with(&mut m, today, vec![]);
+        m.update(Msg::FormSubmit(FormData {
+            id: None,
+            start: "0800".into(),
+            end: "1200".into(),
+            project: "Alpha".into(),
+            comment: String::new(),
+        }));
+        assert_eq!(m.split_followup, None);
+    }
+
+    /// The box over the day screen at 100×30: every row of the session, its
+    /// share, and the footer that says how much has been assigned.
+    #[test]
+    fn the_break_split_box_renders_over_the_day_screen() {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        day_screen_with(&mut m, today, two_project_day(today));
+        m.update(Msg::DayBreakSplit);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| {
+            m.draw(f);
+            let area = f.area();
+            m.app.view(&Id::BreakSplit, f, area);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let rows: Vec<String> = (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        let joined = rows.join("\n");
+        assert!(
+            rows.iter().any(|r| r.contains("Break split — 2026-09-15")),
+            "{joined}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("08:00–12:00  Alpha  (+04:00)")),
+            "{joined}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("12:00–17:00  Beta  (+05:00)")),
+            "{joined}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("assigned 00:00 / 00:48")),
+            "the footer:\n{joined}"
+        );
+        assert!(
+            rows.iter().all(|r| r.chars().count() <= 100),
+            "a row overflows:\n{joined}"
+        );
     }
 
     #[test]

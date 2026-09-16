@@ -1,6 +1,7 @@
 //! tui-realm components. They hold no screen state: their only job is to turn events
 //! into `Msg`s and to own focus. All drawing is done by `Model::draw`.
 
+pub mod break_form;
 pub mod bridge;
 pub mod confirm;
 pub mod day;

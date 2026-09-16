@@ -132,6 +132,8 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         // The chart opens on the per-period bars; `r` is what asks for the
         // running balance, and it then holds for the session.
         chart_mode: msg::ChartMode::default(),
+        split_followup: None,
+        break_split: None,
     };
     model.load_month();
 

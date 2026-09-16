@@ -422,8 +422,20 @@ refused with a status message.
 Opened on a date. Layout: title (date, weekday, holiday name if any),
 day-kind selector (radio style), entry table, key hints.
 
-Entry table columns: Start, End, Gross, Net share, Project, Comment. `a`
-add, `e` edit, `d` delete (confirm), `Esc` back.
+Entry table columns: Start, End, Gross, Net share, Break share, Project,
+Comment. `a` add, `e` edit, `d` delete (confirm), `b` break split, `Esc` back.
+
+Break split (overlay), `Break split — DATE`: one field per entry of the
+selected entry's session, labelled `HH:MM–HH:MM  project  (gross)`, holding
+that entry's share of the session's deduction **in minutes**. An empty field
+is "unassigned" and shows the default share as its placeholder. The footer
+counts `assigned X / D` and refuses a save that assigns more than the session
+loses, or more to an entry than its gross (see 5.2 "Net per entry"). Enter or
+`Ctrl+S` saves every field in one write, `Esc` cancels. It opens on `b`, and
+by itself after a clock-out or a break whose session spans more than one
+project and loses a deduction; after an entry is saved in the day editor the
+same case only puts `break on last project · press b to split` in the status
+bar.
 
 Entry form (overlay): Start, End, Project (picker, `Tab` to open, type to
 filter, `n` to create new), Comment. Live footer shows gross, day break

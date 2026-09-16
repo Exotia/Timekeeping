@@ -31,24 +31,14 @@ const PROJECT: usize = 2;
 /// Index of the last field; Enter there submits.
 const LAST: usize = 3;
 
-const FIELDS: [FieldSpec; 4] = [
-    FieldSpec {
-        label: "Start",
-        placeholder: "0800",
-    },
-    FieldSpec {
-        label: "End",
-        placeholder: "1730",
-    },
-    FieldSpec {
-        label: "Project",
-        placeholder: "type to filter, up/down to pick",
-    },
-    FieldSpec {
-        label: "Comment",
-        placeholder: "optional",
-    },
-];
+fn fields() -> Vec<FieldSpec> {
+    vec![
+        FieldSpec::new("Start", "0800"),
+        FieldSpec::new("End", "1730"),
+        FieldSpec::new("Project", "type to filter, up/down to pick"),
+        FieldSpec::new("Comment", "optional"),
+    ]
+}
 
 pub struct EntryForm {
     form: FieldForm,
@@ -66,7 +56,7 @@ impl EntryForm {
             initial.comment.clone(),
         ];
         Self {
-            form: FieldForm::new(&FIELDS, &values),
+            form: FieldForm::new(&fields(), &values),
             id: initial.id,
             projects,
             picker_idx: 0,

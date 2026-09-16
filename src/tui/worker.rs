@@ -11,7 +11,10 @@ use tuirealm::listener::{PollAsync, PortError, PortResult};
 
 use super::msg::{DayData, MonthData, StatsData, StoreCmd, StoreReply, UserEvent};
 use crate::cli::Ctx;
-use crate::core::{DayKind, Minutes, TodayCtx, day_stats, is_working_day, running_balance};
+use crate::core::{
+    DayKind, Entry, Minutes, TodayCtx, day_stats, deduction, is_working_day, running_balance,
+    session_members,
+};
 
 pub struct Worker {
     pub tx: Sender<StoreCmd>,
@@ -102,6 +105,36 @@ fn count_vacation(ctx: &Ctx, from: NaiveDate, to: NaiveDate) -> anyhow::Result<u
 fn vacation_working_days_in_year(ctx: &Ctx, year: i32) -> anyhow::Result<u32> {
     let (y0, y1) = year_range(year);
     count_vacation(ctx, y0, y1)
+}
+
+/// The reply a booked entry deserves: the message, plus how many projects its
+/// session spans and what that session loses to the break.
+///
+/// Both figures decide whether it is worth asking the user how to split that
+/// deduction, and both are read off the day as it now stands — the entry is
+/// already on the books when this runs.
+fn booked(ctx: &Ctx, e: &Entry, message: String) -> anyhow::Result<StoreReply> {
+    let day = ctx.store.entries_on(e.date)?;
+    let intervals: Vec<(i32, i32)> = day.iter().map(Entry::interval).collect();
+    let group = session_members(&intervals)
+        .into_iter()
+        .find(|g| g.iter().any(|&i| day[i].id == e.id))
+        .unwrap_or_default();
+    let span = {
+        let s = group.iter().map(|&i| intervals[i].0).min().unwrap_or(0);
+        let end = group.iter().map(|&i| intervals[i].1).max().unwrap_or(0);
+        end - s
+    };
+    let mut projects: Vec<&str> = group.iter().map(|&i| day[i].project.as_str()).collect();
+    projects.sort_unstable();
+    projects.dedup();
+    Ok(StoreReply::Booked {
+        entry_id: e.id,
+        date: e.date,
+        session_projects: projects.len(),
+        deduction: deduction(Minutes(span), &ctx.config.rules().tiers),
+        message,
+    })
 }
 
 fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
@@ -217,16 +250,23 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 .store
                 .clock_out_with(now, project.as_deref(), &comment)?
             {
-                Some(e) => StoreReply::Changed(format!(
-                    "Clocked out: {}–{} {} ({})",
-                    e.start.format("%H:%M"),
-                    e.end.format("%H:%M"),
-                    e.project,
-                    e.duration()
-                )),
+                Some(e) => {
+                    let message = format!(
+                        "Clocked out: {}–{} {} ({})",
+                        e.start.format("%H:%M"),
+                        e.end.format("%H:%M"),
+                        e.project,
+                        e.duration()
+                    );
+                    booked(ctx, &e, message)?
+                }
                 // A break was ended: the work before it is already on the books.
                 None => StoreReply::Changed("Break ended".into()),
             }
+        }
+        StoreCmd::SetBreakShares(shares) => {
+            ctx.store.set_break_shares(&shares)?;
+            StoreReply::Changed("Break split saved".into())
         }
         StoreCmd::Shutdown => StoreReply::Changed(String::new()),
     })

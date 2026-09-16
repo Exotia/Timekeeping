@@ -115,7 +115,10 @@ pub fn draw_day(
     );
 
     let header = Row::new(
-        ["", "START", "END", "GROSS", "NET", "PROJECT", "COMMENT"].map(|h| {
+        [
+            "", "START", "END", "GROSS", "NET", "BREAK", "PROJECT", "COMMENT",
+        ]
+        .map(|h| {
             Cell::from(Span::styled(
                 h,
                 Style::default().fg(t.muted).add_modifier(Modifier::BOLD),
@@ -146,6 +149,17 @@ pub fn draw_day(
                     fmt,
                     t,
                 )),
+                // What this entry pays towards its session's break: the
+                // difference between the two columns before it, spelled out so
+                // a share put here by hand is visible.
+                Cell::from(Span::styled(
+                    format!(
+                        "-{}",
+                        (e.duration() - stats.entry_nets.get(i).copied().unwrap_or_default())
+                            .fmt_unsigned(fmt)
+                    ),
+                    Style::default().fg(t.muted),
+                )),
                 Cell::from(Span::styled(e.project.clone(), Style::default().fg(color))),
                 Cell::from(Span::styled(
                     e.comment.clone(),
@@ -169,6 +183,7 @@ pub fn draw_day(
             Constraint::Length(1),
             Constraint::Length(6),
             Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(18),
@@ -387,7 +402,8 @@ mod tests {
             .unwrap_or_else(|| panic!("{joined}"));
         assert!(afternoon.contains("+05:00"), "its gross:\n{joined}");
         assert!(afternoon.contains("+04:12"), "its net:\n{joined}");
-        // The columns are named, and the net ones sit between gross and project.
+        // The columns are named, and the net ones sit between gross and project,
+        // with what each entry paid towards the break after them.
         let header = rows
             .iter()
             .find(|r| r.contains("GROSS"))
@@ -397,9 +413,16 @@ mod tests {
             "column order:\n{joined}"
         );
         assert!(
-            header.find("NET") < header.find("PROJECT"),
+            header.find("NET") < header.find("BREAK"),
             "column order:\n{joined}"
         );
+        assert!(
+            header.find("BREAK") < header.find("PROJECT"),
+            "column order:\n{joined}"
+        );
+        // The whole break sat on the afternoon, and the column says so.
+        assert!(morning.contains("-00:00"), "its break:\n{joined}");
+        assert!(afternoon.contains("-00:48"), "its break:\n{joined}");
     }
 
     #[test]
