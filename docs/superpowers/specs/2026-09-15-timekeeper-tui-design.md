@@ -249,10 +249,10 @@ day to `Work`.
 start_date = "2026-01-01"          # balance is computed from this date
 initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
-break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
+hours_format = "hm"                # "hm" (07:48) | "decimal" (7.80h)
 extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
@@ -267,9 +267,11 @@ deduct_minutes = 48
 # positive = "#a6e3a1"
 ```
 
-Validation at load: tiers ascending and non-negative, target > 0,
-`break_gap_minutes` non-negative, start_date parses, theme value known. A
-validation error prints the field and line and exits 2.
+Validation at load: tiers ascending and non-negative, target > 0, start_date
+parses, theme value known. A validation error prints the field and line and
+exits 2. `break_gap_minutes`, which older versions used to cancel a day's
+deduction, is still accepted and ignored so that an existing config file keeps
+loading under `deny_unknown_fields`.
 
 ## 7. Application architecture
 

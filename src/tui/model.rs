@@ -22,8 +22,8 @@ use super::view::chrome;
 use super::worker::Worker;
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    Entry, HolidayCalendar, HoursFormat, Minutes, Rules, check_overlap, check_range, day_deduction,
-    parse_date, parse_time, recorded_gaps,
+    Entry, HolidayCalendar, HoursFormat, Minutes, Rules, check_overlap, check_range, parse_date,
+    parse_time, session_deduction,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,12 +170,8 @@ pub fn validate_form(
         .chain(std::iter::once(this))
         .collect();
     let gross_day: Minutes = day.iter().map(Entry::duration).sum();
-    let ded = day_deduction(
-        gross_day,
-        recorded_gaps(&day),
-        &rules.tiers,
-        rules.break_gap,
-    );
+    let ivs: Vec<(i32, i32)> = day.iter().map(Entry::interval).collect();
+    let ded = session_deduction(&ivs, &rules.tiers);
     Ok((
         start,
         end,
@@ -1005,7 +1001,6 @@ pub mod testing {
             rules: Rules {
                 daily_target: crate::core::Minutes(468),
                 tiers: crate::core::default_tiers(),
-                break_gap: crate::core::Minutes(30),
                 start_date: today,
                 initial_balance: crate::core::Minutes::ZERO,
             },
@@ -1378,10 +1373,11 @@ mod tests {
         let ok = validate_form(&fd("1300", "16:00", "Alpha"), &existing, &m.rules).unwrap();
         assert_eq!(ok.0, t(13, 0));
         assert_eq!(ok.2, crate::core::Minutes(180)); // gross of this entry
-        // The hour between 12:00 and the new entry is a recorded break, so the
-        // preview promises no deduction — the same figure the day will show.
-        assert_eq!(ok.3, crate::core::Minutes::ZERO); // day deduction
-        assert_eq!(ok.4, crate::core::Minutes(420)); // day net
+        // The hour between 12:00 and the new entry splits the day: the 4:00
+        // morning loses 18, the three-hour afternoon nothing — the same figures
+        // the day screen will show.
+        assert_eq!(ok.3, crate::core::Minutes(18)); // day deduction
+        assert_eq!(ok.4, crate::core::Minutes(420 - 18)); // day net
         assert!(
             validate_form(&fd("abc", "1600", "A"), &existing, &m.rules)
                 .unwrap_err()
@@ -1418,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_form_previews_the_gap_aware_deduction() {
+    fn validate_form_previews_the_session_deduction() {
         let today = d(2026, 9, 15);
         let (m, _rx) = model(today);
         let t = |h, mi| chrono::NaiveTime::from_hms_opt(h, mi, 0).unwrap();
@@ -1438,13 +1434,13 @@ mod tests {
             comment: String::new(),
         };
         let existing = vec![e(1, t(8, 0), t(12, 0))];
-        // Straight on from noon: eight gross hours and no pause at all.
+        // Straight on from noon: one seamless eight-hour session.
         let ok = validate_form(&fd(None, "1200", "1600"), &existing, &m.rules).unwrap();
         assert_eq!(ok.3, crate::core::Minutes(48));
         assert_eq!(ok.4, crate::core::Minutes(480 - 48));
-        // Twenty minutes off is not a break yet.
+        // Twenty minutes off already splits the day: 4:00 and 3:40, 18 each.
         let ok = validate_form(&fd(None, "1220", "1600"), &existing, &m.rules).unwrap();
-        assert_eq!(ok.3, crate::core::Minutes(48));
+        assert_eq!(ok.3, crate::core::Minutes(36));
         // Editing an entry previews the day as it would be, not as it is: the
         // old slot of the entry under edit must not count as its own neighbour.
         let existing = vec![e(1, t(8, 0), t(12, 0)), e(2, t(12, 45), t(17, 0))];
@@ -1452,10 +1448,10 @@ mod tests {
         let ok = validate_form(&fd(Some(2), "1200", "1700"), &existing, &m.rules).unwrap();
         assert_eq!(ok.3, crate::core::Minutes(48));
         assert_eq!(ok.4, crate::core::Minutes(540 - 48));
-        // Leaving it where it is keeps the break.
+        // Leaving it where it is keeps two sessions of 4:00 and 4:15.
         let ok = validate_form(&fd(Some(2), "1245", "1700"), &existing, &m.rules).unwrap();
-        assert_eq!(ok.3, crate::core::Minutes::ZERO);
-        assert_eq!(ok.4, crate::core::Minutes(495));
+        assert_eq!(ok.3, crate::core::Minutes(36));
+        assert_eq!(ok.4, crate::core::Minutes(495 - 36));
     }
 
     #[test]

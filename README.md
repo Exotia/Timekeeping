@@ -61,7 +61,6 @@ file written on first run, verbatim:
 start_date = "2026-01-01"          # balance is computed from this date
 initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
-break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
@@ -85,13 +84,12 @@ deduct_minutes = 48
 | `start_date` | *required* | `YYYY-MM-DD`; the balance sums every day from here to today. Days before it are ignored. |
 | `initial_balance_minutes` | `0` | Balance you already carried on `start_date`. Negative values are allowed. |
 | `daily_target_minutes` | *required* | Target for one working day; must be greater than 0. `468` is 7:48. |
-| `break_gap_minutes` | `30` | A day whose recorded pauses add up to at least this many minutes keeps its full gross: the automatic break deduction is skipped. `0` switches the automatic deduction off entirely. |
 | `vacation_days_per_year` | `30` | Allowance shown in the title bar and on the statistics screen; remaining = allowance − vacation working days taken in the calendar year. No carry-over. |
 | `week_starts_on` | `"monday"` | `"monday"` or `"sunday"`. Accepted and validated, but it has no effect yet: week rows are grouped by ISO week number, which always begins on Monday. |
 | `theme` | `"dark"` | `"dark"`, `"light"` or `"purple"` (deep purple ground, vivid green/red balances). |
 | `hours_format` | `"hm"` | How durations are written: `"hm"` is `+07:48`, `"decimal"` is `+7.80h`. Applies to the TUI and to everything `tk` prints except `tk export`, whose `gross` column stays `±HH:MM`. `u` in the TUI flips it and writes the new value back here. |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as public holidays on top of the built-in Saxon ones (company holidays such as 24 and 31 December). |
-| `[[break_tiers]]` | 180→18, 360→48 | Statutory break table. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
+| `[[break_tiers]]` | 180→18, 360→48 | Statutory break table, applied to each seamless session on its own length. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
 | `[theme_overrides]` | empty | Per-role color overrides. |
 
 **Changing your settings.** The four settings you are most likely to revisit —

@@ -22,7 +22,6 @@ pub const DEFAULT_TOML: &str = r##"# tk configuration — edit and restart tk
 start_date = "2026-01-01"          # balance is computed from this date
 initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
-break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
@@ -55,8 +54,13 @@ pub struct Config {
     #[serde(default)]
     pub initial_balance_minutes: i32,
     pub daily_target_minutes: i32,
-    #[serde(default = "default_break_gap")]
-    pub break_gap_minutes: u32,
+    /// Deprecated, ignored. The break deduction is charged per seamless session
+    /// now, not cancelled by a pause of a given length. The key is still accepted
+    /// so that a config file written by an older `tk` keeps loading under
+    /// `deny_unknown_fields`; nothing reads it and nothing prints it.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    break_gap_minutes: Option<u32>,
     #[serde(default = "default_vacation")]
     pub vacation_days_per_year: u32,
     #[serde(default = "default_week_start")]
@@ -73,9 +77,6 @@ pub struct Config {
     pub theme_overrides: BTreeMap<String, String>,
 }
 
-fn default_break_gap() -> u32 {
-    30
-}
 fn default_vacation() -> u32 {
     30
 }
@@ -151,7 +152,6 @@ impl Config {
     pub fn rules(&self) -> Rules {
         Rules {
             daily_target: Minutes(self.daily_target_minutes),
-            break_gap: Minutes(i32::try_from(self.break_gap_minutes).unwrap_or(i32::MAX)),
             tiers: self
                 .break_tiers
                 .iter()
@@ -312,30 +312,33 @@ mod tests {
         }
     }
 
+    /// `break_gap_minutes` used to cancel a day's deduction outright; the
+    /// deduction is now charged per seamless session and the key does nothing.
+    /// It is still accepted so that a config file written by an older `tk` keeps
+    /// loading instead of failing `deny_unknown_fields`.
     #[test]
-    fn break_gap_minutes_defaults_to_thirty_and_reaches_the_rules() {
-        let c = Config::from_toml(DEFAULT_TOML).unwrap();
-        assert_eq!(c.break_gap_minutes, 30);
-        assert_eq!(c.rules().break_gap, Minutes(30));
-        // The key may be left out of a hand-written file entirely.
-        let without: String = DEFAULT_TOML
-            .lines()
-            .filter(|l| !l.starts_with("break_gap_minutes"))
-            .map(|l| format!("{l}\n"))
-            .collect();
-        assert_eq!(Config::from_toml(&without).unwrap().break_gap_minutes, 30);
-        // Zero is allowed and means "never deduct automatically".
-        let off = DEFAULT_TOML.replace("break_gap_minutes = 30", "break_gap_minutes = 0");
-        assert_eq!(
-            Config::from_toml(&off).unwrap().rules().break_gap,
-            Minutes::ZERO
+    fn a_config_that_still_carries_break_gap_minutes_loads() {
+        // The key sat at root level, right under the daily target.
+        let with_key = |v: &str| {
+            DEFAULT_TOML.replace(
+                "daily_target_minutes = 468",
+                &format!("daily_target_minutes = 468\nbreak_gap_minutes = {v}"),
+            )
+        };
+        let old = with_key("30");
+        let c = Config::from_toml(&old).expect("an old config file must still load");
+        assert_eq!(c.daily_target_minutes, 468);
+        // And nothing about it reaches the rules.
+        assert_eq!(c.rules(), Config::from_toml(DEFAULT_TOML).unwrap().rules());
+        // A value that was never valid is still no reason to refuse the file.
+        let odd = with_key("0");
+        assert!(Config::from_toml(&odd).is_ok());
+        // An unknown key is still rejected.
+        let bad = DEFAULT_TOML.replace(
+            "daily_target_minutes = 468",
+            "daily_target_minutes = 468\nnonsense_minutes = 30",
         );
-        // A negative value is not a duration.
-        let bad = DEFAULT_TOML.replace("break_gap_minutes = 30", "break_gap_minutes = -5");
-        match Config::from_toml(&bad) {
-            Err(ConfigError::Parse(_)) | Err(ConfigError::Validation { .. }) => {}
-            other => panic!("{other:?}"),
-        }
+        assert!(Config::from_toml(&bad).is_err());
     }
 
     #[test]

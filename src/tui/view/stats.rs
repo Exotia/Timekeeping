@@ -626,7 +626,6 @@ mod tests {
         Rules {
             daily_target: Minutes(468),
             tiers: default_tiers(),
-            break_gap: Minutes(30),
             start_date: d(2026, 1, 1),
             initial_balance: Minutes::ZERO,
         }
@@ -1131,7 +1130,6 @@ mod tests {
         let rules = Rules {
             daily_target: Minutes(468),
             tiers: default_tiers(),
-            break_gap: Minutes(30),
             start_date: d(2026, 1, 1),
             initial_balance: Minutes::ZERO,
         };

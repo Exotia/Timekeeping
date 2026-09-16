@@ -93,26 +93,6 @@ pub fn session_deduction(intervals: &[(i32, i32)], tiers: &[BreakTier]) -> Minut
         .sum()
 }
 
-/// The break deduction of a whole day: none once the day's recorded pauses reach
-/// `break_gap`, the tier deduction for `gross` otherwise.
-///
-/// A recorded pause is the user's own break, so the law is already satisfied and
-/// `tk` takes nothing off. A `break_gap` of 0 therefore switches the automatic
-/// deduction off altogether: a day with no pause at all still has `gaps >=
-/// break_gap`.
-pub fn day_deduction(
-    gross: Minutes,
-    gaps: Minutes,
-    tiers: &[BreakTier],
-    break_gap: Minutes,
-) -> Minutes {
-    if gaps >= break_gap {
-        Minutes::ZERO
-    } else {
-        deduction(gross, tiers)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,41 +191,6 @@ mod tests {
         assert_eq!(
             gaps_between(&[(480, 1020), (540, 600), (1080, 1200)]),
             Minutes(60)
-        );
-    }
-
-    #[test]
-    fn a_long_enough_pause_cancels_the_deduction() {
-        let t = default_tiers();
-        let gross = Minutes(540);
-        // No pause, or one that is too short: the tier applies as before.
-        assert_eq!(
-            day_deduction(gross, Minutes::ZERO, &t, Minutes(30)),
-            Minutes(48)
-        );
-        assert_eq!(
-            day_deduction(gross, Minutes(29), &t, Minutes(30)),
-            Minutes(48)
-        );
-        // Exactly the threshold already counts as a real break.
-        assert_eq!(
-            day_deduction(gross, Minutes(30), &t, Minutes(30)),
-            Minutes::ZERO
-        );
-        assert_eq!(
-            day_deduction(gross, Minutes(45), &t, Minutes(30)),
-            Minutes::ZERO
-        );
-    }
-
-    #[test]
-    fn a_threshold_of_zero_cancels_every_day() {
-        // `break_gap = 0` is "trust me, I take my breaks": even a day without a
-        // single recorded pause satisfies `gaps >= break_gap`.
-        let t = default_tiers();
-        assert_eq!(
-            day_deduction(Minutes(540), Minutes::ZERO, &t, Minutes::ZERO),
-            Minutes::ZERO
         );
     }
 

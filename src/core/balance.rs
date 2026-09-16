@@ -9,8 +9,6 @@ use super::{
 pub struct Rules {
     pub daily_target: Minutes,
     pub tiers: Vec<BreakTier>,
-    /// A day whose recorded pauses reach this cancels its break deduction.
-    pub break_gap: Minutes,
     pub start_date: NaiveDate,
     pub initial_balance: Minutes,
 }
@@ -26,7 +24,8 @@ pub struct DayStats {
     pub date: NaiveDate,
     pub kind: DayKind,
     pub gross: Minutes,
-    /// The day's recorded pauses — what [`Rules::break_gap`] is measured against.
+    /// The day's recorded pauses, for information: what the user actually took
+    /// off between entries. The deduction is charged per session, not from this.
     pub gaps: Minutes,
     pub deduction: Minutes,
     pub net: Minutes,
@@ -140,11 +139,11 @@ pub fn running_minutes(session_start: NaiveDateTime, now: NaiveDateTime) -> Minu
 /// Net for today if a session of `running` minutes, opened at `running_since`,
 /// were closed right now.
 ///
-/// The open session counts as one more entry, so the pause before it is a
-/// recorded break like any other: come back from a long lunch and the deduction
-/// is already gone while the clock is still running, instead of reappearing the
-/// moment the entry is written.
-// NOTE: date-blind — a session opened yesterday reads as a pause against today's
+/// The open session counts as one more interval, so it is grouped into sessions
+/// like any entry: come back from lunch and the afternoon is already a session
+/// of its own while the clock is still running, instead of the figures jumping
+/// the moment the entry is written.
+// NOTE: date-blind — a session opened yesterday reads as a gap against today's
 // entries.
 pub fn provisional_net_for(
     entries: &[Entry],
@@ -196,7 +195,6 @@ mod tests {
         Rules {
             daily_target: Minutes(468),
             tiers: default_tiers(),
-            break_gap: Minutes(30),
             start_date: d(2026, 9, 1),
             initial_balance: Minutes(60),
         }
