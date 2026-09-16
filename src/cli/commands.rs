@@ -162,12 +162,26 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             )?;
         }
         Command::Out { project, comment } => {
+            // Read before the write: only the session that is about to be closed
+            // knows whether it was running or paused, and since when.
+            let before = ctx.store.session()?;
             // One transaction in the store: the entry and the cleared session, or neither.
-            let e = ctx.store.clock_out_with(
+            let booked = ctx.store.clock_out_with(
                 now,
                 project.as_deref(),
                 comment.as_deref().unwrap_or(""),
             )?;
+            let Some(e) = booked else {
+                // A break was ended: the work before it was booked when it began.
+                let since = before.expect("the store had a session to close");
+                let paused = running_minutes(NaiveDateTime::new(since.date, since.start), now);
+                writeln!(
+                    out,
+                    "Break ended after {} · nothing to book",
+                    paused.fmt_unsigned(f)
+                )?;
+                return Ok(());
+            };
             let rules = ctx.config.rules();
             let day = ctx
                 .store

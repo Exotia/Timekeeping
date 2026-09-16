@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::core::CoreError;
 
-pub use session::Session;
+pub use session::{Session, SessionState};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -56,16 +56,20 @@ impl Store {
     fn init(conn: Connection) -> StoreResult<Store> {
         // An existing database states its version before anything is written to it, so a
         // schema from a newer `tk` is refused with its tables still intact rather than
-        // having v1 DDL applied on top of it.
+        // having our DDL applied on top of it.
         let has_meta: i64 = conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
             [],
             |r| r.get(0),
         )?;
         if has_meta > 0 {
+            migrate(&conn, schema_version_of(&conn)?)?;
             check_version(schema_version_of(&conn)?)?;
         }
         // One transaction: a failure part-way through leaves no half-created schema.
+        // Every statement is `IF NOT EXISTS`, so on a database that already exists this
+        // only adds what a migration has not: a fresh file gets the whole current schema
+        // and states version 2 straight away.
         conn.execute_batch(&format!("BEGIN;\n{SCHEMA}\nCOMMIT;"))?;
         let store = Store { conn };
         check_version(store.schema_version()?)?;
@@ -106,7 +110,26 @@ impl Store {
 }
 
 /// The only schema version this build understands.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Bring an existing database up to [`SCHEMA_VERSION`], one numbered step at a
+/// time, each in its own transaction so a failure leaves the database on the
+/// version it still is. A version this build does not know is left alone here
+/// and refused by [`check_version`] afterwards, with every row intact.
+fn migrate(conn: &Connection, from: i64) -> StoreResult<()> {
+    if from == 1 {
+        // v1 → v2: explicit break shares per entry, and a session that can be
+        // paused. Both are added to tables that exist, so the rows are kept.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE entries ADD COLUMN break_share INTEGER;
+             ALTER TABLE session ADD COLUMN state TEXT NOT NULL DEFAULT 'working';
+             UPDATE meta SET value = '2' WHERE key = 'schema_version';
+             COMMIT;",
+        )?;
+    }
+    Ok(())
+}
 
 fn check_version(v: i64) -> StoreResult<()> {
     if v == SCHEMA_VERSION {
@@ -162,7 +185,7 @@ fn bad_minute(m: i64) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{CoreError, DayKind, HolidayCalendar};
+    use crate::core::{CoreError, DayKind, HolidayCalendar, Minutes};
     use chrono::{NaiveDate, NaiveTime};
 
     fn d(y: i32, m: u32, dd: u32) -> NaiveDate {
@@ -181,10 +204,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("tk.db");
         let s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 1);
+        assert_eq!(s.schema_version().unwrap(), 2);
         drop(s);
         let s = Store::open(&path).unwrap(); // idempotent
-        assert_eq!(s.schema_version().unwrap(), 1);
+        assert_eq!(s.schema_version().unwrap(), 2);
     }
 
     #[test]
@@ -196,7 +219,7 @@ mod tests {
             let c = Connection::open(&path).unwrap();
             c.execute_batch(
                 "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                 INSERT INTO meta (key, value) VALUES ('schema_version', '2');
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '3');
                  CREATE TABLE future_stuff (id INTEGER PRIMARY KEY);",
             )
             .unwrap();
@@ -205,10 +228,10 @@ mod tests {
             .err()
             .expect("a newer schema must not open");
         match err {
-            StoreError::Migration(m) => assert!(m.contains('2'), "{m}"),
+            StoreError::Migration(m) => assert!(m.contains('3'), "{m}"),
             other => panic!("expected a migration error, got {other:?}"),
         }
-        // None of our v1 DDL ran, and the version it states is untouched.
+        // None of our DDL ran, and the version it states is untouched.
         let c = Connection::open(&path).unwrap();
         let tables: Vec<String> = c
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -225,7 +248,72 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "2");
+        assert_eq!(v, "3");
+    }
+
+    /// The v1 schema, exactly as `tk` wrote it before break shares and the
+    /// break state existed: the shape of every database already in use.
+    const V1_SCHEMA: &str = "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+             color_index INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE days (date TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT);
+         CREATE TABLE entries (id INTEGER PRIMARY KEY, date TEXT NOT NULL,
+             start_min INTEGER NOT NULL, end_min INTEGER NOT NULL,
+             project_id INTEGER NOT NULL REFERENCES projects(id),
+             comment TEXT NOT NULL DEFAULT '');
+         CREATE INDEX entries_date ON entries(date);
+         CREATE TABLE session (id INTEGER PRIMARY KEY CHECK (id = 1),
+             date TEXT NOT NULL, start_min INTEGER NOT NULL, project_id INTEGER);
+         INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+         INSERT INTO projects (id, name, color_index) VALUES (1, 'Alpha', 0);
+         INSERT INTO days (date, kind, label) VALUES ('2026-09-16', 'vacation', NULL);
+         INSERT INTO entries (id, date, start_min, end_min, project_id, comment)
+             VALUES (7, '2026-09-15', 540, 1020, 1, 'kept');
+         INSERT INTO session (id, date, start_min, project_id)
+             VALUES (1, '2026-09-17', 480, 1);";
+
+    #[test]
+    fn a_v1_database_is_migrated_to_v2_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tk.db");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(V1_SCHEMA).unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+        // Every v1 row is still there, and the new column reads as unassigned.
+        let e = s.entry(7).unwrap();
+        assert_eq!(
+            (e.date, e.start, e.end),
+            (d(2026, 9, 15), t(9, 0), t(17, 0))
+        );
+        assert_eq!((e.project.as_str(), e.comment.as_str()), ("Alpha", "kept"));
+        assert_eq!(e.break_share, None);
+        assert_eq!(
+            s.stored_kind(d(2026, 9, 16)).unwrap(),
+            Some(DayKind::Vacation)
+        );
+        assert_eq!(s.list_projects(true).unwrap().len(), 1);
+        // The session it was left clocked in on survives, working as before.
+        let sess = s.session().unwrap().expect("the open session is kept");
+        assert_eq!((sess.date, sess.start), (d(2026, 9, 17), t(8, 0)));
+        assert_eq!(sess.state, SessionState::Working);
+        // And the new columns are usable straight away.
+        s.set_break_shares(&[(7, Some(crate::core::Minutes(20)))])
+            .unwrap();
+        assert_eq!(
+            s.entry(7).unwrap().break_share,
+            Some(crate::core::Minutes(20))
+        );
+        drop(s);
+        // Opening it again is a no-op: the migration does not run twice.
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(
+            s.entry(7).unwrap().break_share,
+            Some(crate::core::Minutes(20))
+        );
     }
 
     #[test]
@@ -389,7 +477,10 @@ mod tests {
             Err(StoreError::Constraint(_))
         ));
         s.clock_in(day, t(8, 12), "Alpha").unwrap();
-        let e = s.clock_out(at(day, 10, 30), "review").unwrap();
+        let e = s
+            .clock_out(at(day, 10, 30), "review")
+            .unwrap()
+            .expect("booked");
         assert_eq!((e.date, e.start, e.end), (day, t(8, 12), t(10, 30)));
         assert_eq!(e.project, "Alpha");
         assert_eq!(e.comment, "review");
@@ -408,7 +499,13 @@ mod tests {
         s.conn()
             .execute("UPDATE session SET project_id = NULL", [])
             .unwrap();
-        assert_eq!(s.clock_out(at(day, 9, 0), "").unwrap().project, "Beta");
+        assert_eq!(
+            s.clock_out(at(day, 9, 0), "")
+                .unwrap()
+                .expect("booked")
+                .project,
+            "Beta"
+        );
 
         // With no entry to learn from either, the clock-out says so and keeps the session.
         let s = Store::open_in_memory().unwrap();
@@ -463,7 +560,7 @@ mod tests {
 
         // Clocking out inside the minute the switch skipped forward to books that one
         // minute, not a shift running all the way back round the clock.
-        let e3 = s.clock_out(at(day, 10, 30), "").unwrap();
+        let e3 = s.clock_out(at(day, 10, 30), "").unwrap().expect("booked");
         assert_eq!((e3.start, e3.end), (t(10, 31), t(10, 32)));
         assert_eq!(e3.duration(), crate::core::Minutes(1));
 
@@ -486,7 +583,7 @@ mod tests {
         s.clock_in(day, t(9, 35), "A").unwrap();
         s.switch_project(now, "B", "").unwrap();
         s.switch_project(now, "C", "").unwrap();
-        let last = s.clock_out(now, "").unwrap();
+        let last = s.clock_out(now, "").unwrap().expect("booked");
         assert_eq!(
             (last.project.as_str(), last.start, last.end),
             ("C", t(9, 37), t(9, 38))
@@ -512,7 +609,10 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let day = d(2026, 9, 15);
         s.clock_in(day, t(0, 10), "Alpha").unwrap();
-        let e = s.clock_out(at(d(2026, 9, 16), 0, 9), "").unwrap();
+        let e = s
+            .clock_out(at(d(2026, 9, 16), 0, 9), "")
+            .unwrap()
+            .expect("booked");
         assert_eq!((e.date, e.start, e.end), (day, t(0, 10), t(0, 9)));
         assert_eq!(e.duration(), crate::core::Minutes(1439));
         // A clock-out dated before the session is a broken clock, not an entry.
@@ -547,11 +647,166 @@ mod tests {
         s.clock_in(day, t(8, 0), "Alpha").unwrap();
         let e = s
             .clock_out_with(at(day, 9, 0), Some("Other"), "wrong project")
-            .unwrap();
+            .unwrap()
+            .expect("booked");
         assert_eq!(e.project, "Other");
         assert_eq!(e.comment, "wrong project");
         assert!(s.session().unwrap().is_none());
         assert_eq!(s.entries_on(day).unwrap()[0].project, "Other");
+    }
+
+    #[test]
+    fn break_shares_are_stored_per_entry_and_survive_an_edit() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        let a = s.add_entry(day, t(8, 0), t(12, 0), "Alpha", "am").unwrap();
+        let b = s.add_entry(day, t(12, 0), t(17, 0), "Beta", "pm").unwrap();
+        // A new entry is unassigned: the default rule decides what it pays.
+        assert_eq!(a.break_share, None);
+        assert_eq!(b.break_share, None);
+        s.set_break_shares(&[(a.id, Some(Minutes(30))), (b.id, None)])
+            .unwrap();
+        let list = s.entries_on(day).unwrap();
+        assert_eq!(list[0].break_share, Some(Minutes(30)));
+        assert_eq!(list[1].break_share, None);
+        // Editing the times of an entry is not a change of its share.
+        let a2 = s
+            .update_entry(a.id, t(8, 30), t(12, 0), "Alpha", "am")
+            .unwrap();
+        assert_eq!(a2.break_share, Some(Minutes(30)));
+        // Clearing is a share of `None`, not a zero.
+        s.set_break_shares(&[(a.id, None)]).unwrap();
+        assert_eq!(s.entry(a.id).unwrap().break_share, None);
+        s.set_break_shares(&[(a.id, Some(Minutes::ZERO))]).unwrap();
+        assert_eq!(s.entry(a.id).unwrap().break_share, Some(Minutes::ZERO));
+        // An unknown id is refused, and the whole batch is rolled back with it:
+        // the shares of a session are only meaningful together.
+        let err = s
+            .set_break_shares(&[(b.id, Some(Minutes(9))), (999, None)])
+            .unwrap_err();
+        assert!(matches!(err, StoreError::NotFound(_)), "{err}");
+        assert_eq!(s.entry(b.id).unwrap().break_share, None);
+    }
+
+    #[test]
+    fn a_break_books_the_work_so_far_and_keeps_the_project() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        // Nothing running: there is no break to take.
+        assert!(matches!(
+            s.take_break(at(day, 9, 0), ""),
+            Err(StoreError::Constraint(_))
+        ));
+        s.clock_in(day, t(8, 12), "Alpha").unwrap();
+        let e = s.take_break(at(day, 12, 3), "morning").unwrap();
+        assert_eq!((e.date, e.start, e.end), (day, t(8, 12), t(12, 3)));
+        assert_eq!(
+            (e.project.as_str(), e.comment.as_str()),
+            ("Alpha", "morning")
+        );
+        // The session stays, paused on the project to come back to, from the
+        // minute the work stopped.
+        let sess = s.session().unwrap().expect("the session is kept");
+        assert_eq!(sess.state, SessionState::Break);
+        assert_eq!((sess.date, sess.start), (day, t(12, 3)));
+        assert_eq!(sess.project.as_deref(), Some("Alpha"));
+        // A second break changes nothing.
+        let err = s.take_break(at(day, 12, 30), "").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Constraint(m) if m.contains("already on break")),
+            "{err}"
+        );
+        assert_eq!(s.entries_on(day).unwrap().len(), 1);
+        assert_eq!(s.session().unwrap().unwrap().start, t(12, 3));
+    }
+
+    #[test]
+    fn resuming_goes_back_to_the_remembered_project_or_another_one() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(8, 12), "Alpha").unwrap();
+        s.take_break(at(day, 12, 3), "").unwrap();
+        let sess = s.resume(at(day, 12, 45), None).unwrap();
+        assert_eq!(sess.state, SessionState::Working);
+        assert_eq!((sess.date, sess.start), (day, t(12, 45)));
+        assert_eq!(sess.project.as_deref(), Some("Alpha"));
+        // Not on a break any more, so there is nothing to resume.
+        let err = s.resume(at(day, 13, 0), None).unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Constraint(m) if m.contains("not on break")),
+            "{err}"
+        );
+        // Coming back on another project is a resume too.
+        s.take_break(at(day, 14, 0), "").unwrap();
+        let sess = s.resume(at(day, 14, 20), Some("Beta")).unwrap();
+        assert_eq!(sess.project.as_deref(), Some("Beta"));
+        assert_eq!(sess.start, t(14, 20));
+        // Clocking in on a break resumes it rather than complaining that a
+        // session is already open.
+        s.take_break(at(day, 15, 0), "").unwrap();
+        s.clock_in(day, t(15, 30), "Gamma").unwrap();
+        let sess = s.session().unwrap().unwrap();
+        assert_eq!(sess.state, SessionState::Working);
+        assert_eq!(
+            (sess.project.as_deref(), sess.start),
+            (Some("Gamma"), t(15, 30))
+        );
+        // A switch is not the way back from a break: it says which key is.
+        s.take_break(at(day, 16, 0), "").unwrap();
+        let err = s.switch_project(at(day, 16, 5), "Delta", "").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Constraint(m) if m.contains("on break")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn clocking_out_on_a_break_clears_it_without_booking() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(8, 12), "Alpha").unwrap();
+        s.take_break(at(day, 12, 3), "").unwrap();
+        assert!(s.clock_out(at(day, 12, 45), "").unwrap().is_none());
+        assert!(s.session().unwrap().is_none());
+        // Only the work before the break is on the books.
+        let list = s.entries_on(day).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].start, list[0].end), (t(8, 12), t(12, 3)));
+    }
+
+    #[test]
+    fn the_work_around_a_break_is_two_sessions() {
+        use crate::core::{HolidayCalendar, Rules, TodayCtx, day_stats, default_tiers};
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(8, 0), "Alpha").unwrap();
+        s.take_break(at(day, 12, 0), "").unwrap();
+        s.resume(at(day, 12, 45), None).unwrap();
+        let e = s.clock_out(at(day, 17, 0), "").unwrap().expect("booked");
+        assert_eq!((e.start, e.end), (t(12, 45), t(17, 0)));
+        let rules = Rules {
+            daily_target: Minutes(468),
+            tiers: default_tiers(),
+            start_date: day,
+            initial_balance: Minutes::ZERO,
+        };
+        let cal = HolidayCalendar::new(vec![]);
+        let dd = s.days_in(day, day, &cal).unwrap().remove(0);
+        let st = day_stats(
+            &dd,
+            &rules,
+            &cal,
+            &TodayCtx {
+                today: d(2026, 9, 16),
+                clocked_in: false,
+            },
+        );
+        // The 45 minutes off split the day: 4:00 and 4:15, each over three
+        // hours, so each loses 18 rather than the 48 of one long session.
+        assert_eq!(st.gross, Minutes(495));
+        assert_eq!(st.gaps, Minutes(45));
+        assert_eq!(st.deduction, Minutes(36));
+        assert_eq!(st.net, Minutes(459));
     }
 
     #[test]

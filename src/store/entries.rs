@@ -2,9 +2,9 @@ use chrono::{NaiveDate, NaiveTime};
 use rusqlite::params;
 
 use super::{Store, StoreError, StoreResult, date_str, parse_date, time_from_min};
-use crate::core::{DayKind, Entry, check_overlap, check_range, minutes_of};
+use crate::core::{DayKind, Entry, Minutes, check_overlap, check_range, minutes_of};
 
-const SELECT: &str = "SELECT e.id, e.date, e.start_min, e.end_min, p.name, e.comment
+const SELECT: &str = "SELECT e.id, e.date, e.start_min, e.end_min, p.name, e.comment, e.break_share
                       FROM entries e JOIN projects p ON p.id = e.project_id";
 
 fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
@@ -15,7 +15,7 @@ fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         end: time_from_min(r.get(3)?)?,
         project: r.get(4)?,
         comment: r.get(5)?,
-        break_share: None,
+        break_share: r.get::<_, Option<i64>>(6)?.map(|m| Minutes(m as i32)),
     })
 }
 
@@ -84,6 +84,8 @@ impl Store {
         check_range(start, end)?;
         check_overlap(&self.entries_on(date)?, start, end, None)?;
         let p = self.get_or_create_project(project)?;
+        // `break_share` is left to its column default (NULL): a new entry is
+        // unassigned, and the default rule decides what it pays.
         self.conn().execute(
             "INSERT INTO entries (date, start_min, end_min, project_id, comment) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![date_str(date), minutes_of(start), minutes_of(end), p.id, comment.trim()],
@@ -104,11 +106,35 @@ impl Store {
             check_range(start, end)?;
             check_overlap(&self.entries_on(existing.date)?, start, end, Some(id))?;
             let p = self.get_or_create_project(project)?;
+            // The share is not the form's to change: editing the times of an
+            // entry keeps whatever share it was given (see `set_break_shares`).
             self.conn().execute(
                 "UPDATE entries SET start_min = ?2, end_min = ?3, project_id = ?4, comment = ?5 WHERE id = ?1",
                 params![id, minutes_of(start), minutes_of(end), p.id, comment.trim()],
             )?;
             self.entry(id)
+        })
+    }
+
+    /// Set (or clear, with `None`) the explicit break share of several entries
+    /// at once.
+    ///
+    /// One transaction over the lot: the box that edits the shares of a whole
+    /// session either saves all of them or none, so no session is ever left
+    /// half-assigned. An id that does not exist is reported and nothing is
+    /// written — the shares of a session are only meaningful together.
+    pub fn set_break_shares(&self, shares: &[(i64, Option<Minutes>)]) -> StoreResult<()> {
+        self.in_write_tx(|| {
+            for (id, share) in shares {
+                let n = self.conn().execute(
+                    "UPDATE entries SET break_share = ?2 WHERE id = ?1",
+                    params![id, share.map(|m| m.0)],
+                )?;
+                if n == 0 {
+                    return Err(StoreError::NotFound(format!("entry {id}")));
+                }
+            }
+            Ok(())
         })
     }
 

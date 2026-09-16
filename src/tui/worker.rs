@@ -213,16 +213,20 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             ))
         }
         StoreCmd::ClockOut { project, comment } => {
-            let e = ctx
+            match ctx
                 .store
-                .clock_out_with(now, project.as_deref(), &comment)?;
-            StoreReply::Changed(format!(
-                "Clocked out: {}–{} {} ({})",
-                e.start.format("%H:%M"),
-                e.end.format("%H:%M"),
-                e.project,
-                e.duration()
-            ))
+                .clock_out_with(now, project.as_deref(), &comment)?
+            {
+                Some(e) => StoreReply::Changed(format!(
+                    "Clocked out: {}–{} {} ({})",
+                    e.start.format("%H:%M"),
+                    e.end.format("%H:%M"),
+                    e.project,
+                    e.duration()
+                )),
+                // A break was ended: the work before it is already on the books.
+                None => StoreReply::Changed("Break ended".into()),
+            }
         }
         StoreCmd::Shutdown => StoreReply::Changed(String::new()),
     })

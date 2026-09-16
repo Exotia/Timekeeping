@@ -1248,6 +1248,7 @@ mod tests {
             date: today,
             start: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
             project: Some("Alpha".into()),
+            state: crate::store::SessionState::Working,
         };
         m.month = Some(month_with_projects(
             today,
@@ -1316,6 +1317,7 @@ mod tests {
                 date: d(2026, 9, 14),
                 start: NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
                 project: Some("Alpha".into()),
+                state: crate::store::SessionState::Working,
             }),
         ));
         let info = m.title_info();

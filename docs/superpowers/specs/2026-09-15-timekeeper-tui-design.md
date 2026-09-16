@@ -250,7 +250,7 @@ backups/       created by `tk backup`
 
 Portability = copy this directory.
 
-### 6.2 Schema (v1)
+### 6.2 Schema (v2)
 
 ```sql
 CREATE TABLE meta      (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- schema_version
@@ -260,17 +260,30 @@ CREATE TABLE days      (date TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT);
 CREATE TABLE entries   (id INTEGER PRIMARY KEY, date TEXT NOT NULL,
                         start_min INTEGER NOT NULL, end_min INTEGER NOT NULL,
                         project_id INTEGER NOT NULL REFERENCES projects(id),
-                        comment TEXT NOT NULL DEFAULT '');
+                        comment TEXT NOT NULL DEFAULT '',
+                        break_share INTEGER);            -- v2; NULL = unassigned
 CREATE INDEX entries_date ON entries(date);
 CREATE TABLE session   (id INTEGER PRIMARY KEY CHECK (id = 1),
                         date TEXT NOT NULL, start_min INTEGER NOT NULL,
-                        project_id INTEGER);
+                        project_id INTEGER,
+                        state TEXT NOT NULL DEFAULT 'working');  -- v2; 'working' | 'break'
 ```
 
 Dates are ISO `YYYY-MM-DD` text. Times are minutes since midnight.
 Migrations are forward-only, numbered, applied in a transaction at open.
 A `days` row exists only when the kind is not `Work`; deleting it resets the
 day to `Work`.
+
+**v1 → v2.** Both v2 columns are added to tables that already exist, so the
+migration is two `ALTER TABLE … ADD COLUMN`s and the new `schema_version`, in
+one transaction: every v1 row is kept, every entry reads as unassigned and
+every session as `working`. A fresh database is created at v2 directly. A
+version this build does not know is still refused with the database untouched.
+
+**Break state.** While `state = 'break'` the session row holds the minute the
+break began and the project to come back to; the work before it is already an
+entry. Resuming moves `date`/`start_min` to now and the state back to
+`working`; clocking out on a break clears the row and books nothing.
 
 ### 6.3 Config file
 
