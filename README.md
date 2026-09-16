@@ -295,6 +295,15 @@ restart.
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |
 
+Under the range selector sits the overtime chart: one bar per day for a week,
+per ISO week for a month, per month for a quarter or a year. Bars grow to the
+right of the zero line when the period is over its target and to the left when
+it is under it, and the line below them sums the range and names its best and
+worst period. Days before `start_date` are left out, the same as everywhere
+else the balance is counted. A terminal too short for every bar shows the most
+recent ones, ending at the period today falls in, and marks the cut with a `…`
+in the panel title.
+
 ### Overlays
 
 | Overlay | Keys |

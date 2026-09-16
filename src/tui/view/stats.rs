@@ -41,6 +41,9 @@ pub struct StatsView {
     pub balance_total: Minutes,
     pub best: Option<usize>,
     pub worst: Option<usize>,
+    /// Today, so a chart that cannot show every bucket can end at the one the
+    /// user is living in rather than in an empty future.
+    pub today: NaiveDate,
 }
 
 /// The (from, to) date range covered by a given `RangeKind`, relative to `today`.
@@ -172,10 +175,11 @@ pub fn best_worst(buckets: &[Bucket]) -> (Option<usize>, Option<usize>) {
     if buckets.iter().all(|b| b.balance == Minutes::ZERO) {
         return (None, None);
     }
+    // Ties go to the earlier bucket, in both directions.
     let best = buckets
         .iter()
         .enumerate()
-        .max_by_key(|(_, b)| b.balance)
+        .max_by_key(|(i, b)| (b.balance, std::cmp::Reverse(*i)))
         .map(|(i, _)| i);
     let worst = buckets
         .iter()
@@ -219,6 +223,7 @@ pub fn build_stats(
         balance_total: Minutes::ZERO,
         best: None,
         worst: None,
+        today,
     };
     for day in &data.days {
         let s = day_stats(day, rules, cal, &ctx);
@@ -290,37 +295,182 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
     draw_stats(f, area, &m.theme, &v, m.stats_range);
 }
 
+/// The bar area of a chart row: label (7) + a space + the bars + a right-aligned
+/// value (8) + a trailing space.
+const CHART_GUTTER: usize = 7 + 1 + 8 + 1;
+
+/// Where the zero line sits inside a bar area of `width` columns, given the
+/// largest negative and positive balance on show. It is a column of its own, so
+/// negative bars end just left of it and positive ones start just right of it.
+fn zero_column(width: usize, max_neg: i32, max_pos: i32) -> usize {
+    let last = width.saturating_sub(1);
+    if max_neg == 0 {
+        return 0;
+    }
+    if max_pos == 0 {
+        return last;
+    }
+    // Too narrow to split: the one free cell goes to the bigger side.
+    if last < 2 {
+        return if max_neg >= max_pos { last } else { 0 };
+    }
+    let share = last as f64 * max_neg as f64 / (max_neg + max_pos) as f64;
+    (share.round() as usize).clamp(1, last.saturating_sub(1))
+}
+
+/// A bar length in cells: proportional to `span`, but never rounded away to
+/// nothing — a day that is 4 minutes short still has to be visible.
+fn bar_len(span: usize, value: i32, max: i32) -> usize {
+    if value == 0 || max == 0 || span == 0 {
+        return 0;
+    }
+    ((span as f64 * value as f64 / max as f64).round() as usize).clamp(1, span)
+}
+
+/// The slice of buckets a panel `rows` tall can show: the most recent ones,
+/// ending at the bucket today falls in so that a year seen in September does not
+/// scroll away into three empty winter months.
+fn visible_buckets(v: &StatsView, rows: usize) -> &[Bucket] {
+    if rows >= v.buckets.len() {
+        return &v.buckets;
+    }
+    let end = v
+        .buckets
+        .iter()
+        .rposition(|b| b.from <= v.today)
+        .map_or(v.buckets.len(), |i| i + 1)
+        .max(rows);
+    &v.buckets[end - rows..end]
+}
+
+fn value_spans(m: Minutes, t: &Theme) -> Vec<Span<'static>> {
+    let s = minutes_span(m, t);
+    let pad = 8usize.saturating_sub(s.content.chars().count());
+    vec![Span::raw(" ".repeat(pad)), s]
+}
+
+/// The overtime chart: one bar per bucket, growing left or right of a zero line.
+pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let rows = area.height.saturating_sub(4) as usize;
+    let shown = visible_buckets(v, rows);
+    let bar_w = inner_w.saturating_sub(CHART_GUTTER).max(1);
+    let max_neg = shown.iter().map(|b| -b.balance.0).max().unwrap_or(0).max(0);
+    let max_pos = shown.iter().map(|b| b.balance.0).max().unwrap_or(0).max(0);
+    let zero = zero_column(bar_w, max_neg, max_pos);
+    let pos_span = bar_w - zero - 1;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for b in shown {
+        let (neg, pos) = if b.balance.0 < 0 {
+            (bar_len(zero, -b.balance.0, max_neg), 0)
+        } else {
+            (0, bar_len(pos_span, b.balance.0, max_pos))
+        };
+        let mut l = vec![
+            Span::styled(format!("{:<7}", b.label), Style::default().fg(t.text)),
+            Span::raw(" ".repeat(1 + zero - neg)),
+            Span::styled("█".repeat(neg), Style::default().fg(t.negative)),
+            Span::styled("│", Style::default().fg(t.muted)),
+            Span::styled("█".repeat(pos), Style::default().fg(t.positive)),
+            Span::raw(" ".repeat(pos_span - pos)),
+        ];
+        l.extend(value_spans(b.balance, t));
+        lines.push(Line::from(l));
+    }
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(8 + zero)),
+        Span::styled("0", Style::default().fg(t.muted)),
+    ]));
+
+    let mut footer = vec![
+        Span::styled("total ", Style::default().fg(t.muted)),
+        minutes_span(v.balance_total, t),
+    ];
+    for (label, idx) in [("best", v.best), ("worst", v.worst)] {
+        let Some(b) = idx.and_then(|i| v.buckets.get(i)) else {
+            continue;
+        };
+        footer.push(Span::styled(
+            format!(" · {label} {} ", b.label),
+            Style::default().fg(t.muted),
+        ));
+        footer.push(minutes_span(b.balance, t));
+    }
+    lines.push(Line::from(footer));
+
+    let title = match v.granularity {
+        Granularity::Day => "Balance per day",
+        Granularity::Week => "Balance per week",
+        Granularity::Month => "Balance per month",
+    };
+    let title = if shown.len() < v.buckets.len() {
+        format!("… {title}")
+    } else {
+        title.to_string()
+    };
+    f.render_widget(Paragraph::new(lines).block(block(t, Some(&title))), area);
+}
+
+/// The height the chart panel asks for: its rows plus borders, axis and footer,
+/// but never more than what is left once the projects and the day-type panels
+/// have their minimum.
+fn chart_height(v: &StatsView, area: Rect) -> u16 {
+    let available = area.height.saturating_sub(3 + 5 + 6);
+    if v.buckets.is_empty() || available < 5 {
+        return 0;
+    }
+    ((v.buckets.len() + 4) as u16).min(available)
+}
+
 pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: RangeKind) {
-    let [sel, proj, kinds] = Layout::vertical([
+    let chart_h = chart_height(v, area);
+    let [sel, chart, proj, kinds] = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Min(6),
+        Constraint::Length(chart_h),
+        Constraint::Min(5),
         Constraint::Length(6),
     ])
     .areas(area);
 
-    let mut spans = Vec::new();
-    for (k, key, label) in [
+    let entries = [
         (RangeKind::Week, "1", "week"),
         (RangeKind::ThisMonth, "2", "month"),
         (RangeKind::LastMonth, "3", "last month"),
         (RangeKind::Quarter, "4", "quarter"),
         (RangeKind::Year, "5", "year"),
-    ] {
+    ];
+    let dates = format!("{} → {}", v.from, v.to);
+    // Five ranges and the dates are wider than 80 columns with the airy gaps the
+    // line has room for elsewhere, and the dates are the part worth keeping.
+    let roomy: usize = entries
+        .iter()
+        .map(|(_, k, l)| k.chars().count() + l.chars().count() + 3 + 3)
+        .sum::<usize>()
+        + dates.chars().count();
+    let gap = if roomy <= sel.width.saturating_sub(2) as usize {
+        "   "
+    } else {
+        " "
+    };
+    let mut spans = Vec::new();
+    for (k, key, label) in entries {
         let style = if k == active {
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(t.muted)
         };
-        spans.push(Span::styled(format!("[{key}] {label}   "), style));
+        spans.push(Span::styled(format!("[{key}] {label}{gap}"), style));
     }
-    spans.push(Span::styled(
-        format!("{} → {}", v.from, v.to),
-        Style::default().fg(t.text),
-    ));
+    spans.push(Span::styled(dates, Style::default().fg(t.text)));
     f.render_widget(
         Paragraph::new(Line::from(spans)).block(block(t, Some("Range"))),
         sel,
     );
+
+    if chart_h > 0 {
+        draw_chart(f, chart, t, v);
+    }
 
     let total = v.total.0.max(1) as f64;
     let bar_w = proj.width.saturating_sub(2 + 20 + 2 + 9 + 8 + 2).max(10);
@@ -581,6 +731,180 @@ mod tests {
         assert_eq!((best_worst(&flat)), (None, None));
         let b = buckets_of(days, from, to, Granularity::Week);
         assert_eq!(best_worst(&b), (Some(0), Some(1)));
+        // Two equally good weeks: the earlier one is the one named.
+        let tied = buckets_of(
+            vec![plus24(d(2026, 9, 1)), plus24(d(2026, 9, 9))],
+            from,
+            to,
+            Granularity::Week,
+        );
+        assert_eq!(best_worst(&tied).0, Some(0));
+    }
+
+    fn stats_data(from: NaiveDate, to: NaiveDate, days: Vec<Day>) -> StatsData {
+        StatsData {
+            from,
+            to,
+            days,
+            projects: vec![],
+            vacation_used_year: 0,
+            session_active: false,
+        }
+    }
+
+    fn view(kind: RangeKind, days: Vec<Day>) -> StatsView {
+        let today = d(2026, 9, 15);
+        let (from, to) = range_for(kind, today);
+        build_stats(
+            &stats_data(from, to, days),
+            &rules(),
+            &HolidayCalendar::default(),
+            today,
+            30,
+            kind,
+        )
+    }
+
+    /// The columns a row's `█` cells sit in, and the column of the zero line —
+    /// the one `│` that is neither the left nor the right border of the panel.
+    fn bars_and_zero(row: &str) -> (Vec<usize>, usize) {
+        let chars: Vec<char> = row.chars().collect();
+        let bars = chars
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == '█')
+            .map(|(i, _)| i)
+            .collect();
+        let pipes: Vec<usize> = chars
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == '│')
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            pipes.len(),
+            3,
+            "expected two borders and a zero line: {row}"
+        );
+        (bars, pipes[1])
+    }
+
+    #[test]
+    fn a_bar_area_of_one_column_still_draws() {
+        // Both signs on show and no room to split: the zero line takes the column.
+        assert_eq!(zero_column(0, 5, 5), 0);
+        assert_eq!(zero_column(1, 5, 5), 0);
+        assert_eq!(zero_column(2, 5, 5), 1);
+        assert_eq!(zero_column(10, 0, 5), 0);
+        assert_eq!(zero_column(10, 5, 0), 9);
+        let v = view(
+            RangeKind::ThisMonth,
+            vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
+        );
+        // Far below the minimum terminal, but a panic here would take the app down.
+        let rows = render(20, 21, |f| {
+            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+        });
+        assert!(rows.iter().all(|r| r.chars().count() <= 20));
+    }
+
+    #[test]
+    fn the_range_line_keeps_its_dates_at_eighty_columns() {
+        let v = view(RangeKind::Year, vec![]);
+        for w in [80u16, 100] {
+            let rows = render(w, 21, |f| {
+                draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::Year)
+            });
+            let joined = rows.join("\n");
+            assert!(
+                contains(&rows, "2026-01-01 → 2026-12-31"),
+                "the range is cut at {w} columns:\n{joined}"
+            );
+            assert!(contains(&rows, "[1] week"), "{joined}");
+            assert!(contains(&rows, "[5] year"), "{joined}");
+        }
+    }
+
+    #[test]
+    fn month_chart_draws_a_bar_per_week() {
+        let v = view(
+            RangeKind::ThisMonth,
+            vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
+        );
+        let rows = render(100, 30, |f| {
+            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "Balance per week"), "{joined}");
+        assert!(contains(&rows, "KW 36"), "{joined}");
+        assert!(contains(&rows, "KW 37"), "{joined}");
+        assert!(contains(&rows, "+00:24"), "{joined}");
+        assert!(contains(&rows, "-07:48"), "{joined}");
+        // The axis row carries the zero label, the footer the totals.
+        assert!(contains(&rows, "total "), "{joined}");
+        assert!(contains(&rows, "best KW 36"), "{joined}");
+        assert!(contains(&rows, "worst KW 37"), "{joined}");
+        let plus = rows.iter().find(|r| r.contains("KW 36")).unwrap();
+        let (bars, zero) = bars_and_zero(plus);
+        assert!(bars.iter().all(|b| *b > zero), "{plus}");
+    }
+
+    #[test]
+    fn a_negative_only_chart_grows_to_the_left() {
+        let v = view(RangeKind::ThisMonth, vec![missing(d(2026, 9, 8))]);
+        let rows = render(100, 30, |f| {
+            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+        });
+        let row = rows.iter().find(|r| r.contains("KW 37")).unwrap();
+        let (bars, zero) = bars_and_zero(row);
+        assert!(!bars.is_empty(), "no bar drawn: {row}");
+        assert!(
+            bars.iter().all(|b| *b < zero),
+            "bars must sit left of the zero line: {row}"
+        );
+        // With nothing positive the zero line hugs the right end of the bar area.
+        assert!(zero > 80, "zero line too far left: {row}");
+    }
+
+    #[test]
+    fn a_year_fits_into_eighty_columns() {
+        let v = view(
+            RangeKind::Year,
+            vec![plus24(d(2026, 1, 5)), missing(d(2026, 2, 3))],
+        );
+        assert_eq!(v.buckets.len(), 12);
+        // The body of an 80×24 terminal: title bar, status bar and hint row taken off.
+        let rows = render(80, 21, |f| {
+            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::Year)
+        });
+        let joined = rows.join("\n");
+        assert!(
+            rows.iter().all(|r| r.chars().count() <= 80),
+            "a row overflows 80 columns:\n{joined}"
+        );
+        // Not all twelve months fit, so the title says the chart is cut.
+        assert!(contains(&rows, "… Balance per month"), "{joined}");
+        // The window ends at the month today is in.
+        assert!(contains(&rows, "Sep"), "{joined}");
+        // Every panel still has its frame.
+        for title in ["Range", "Balance per month", "Projects", "Days"] {
+            assert!(contains(&rows, title), "{title} missing:\n{joined}");
+        }
+        assert_eq!(
+            rows.iter().filter(|r| r.starts_with('╭')).count(),
+            4,
+            "{joined}"
+        );
+    }
+
+    #[test]
+    fn an_empty_range_draws_no_chart() {
+        let mut v = view(RangeKind::ThisMonth, vec![]);
+        v.buckets.clear();
+        let rows = render(100, 30, |f| {
+            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+        });
+        assert!(!contains(&rows, "Balance per"), "{}", rows.join("\n"));
     }
 
     #[test]
