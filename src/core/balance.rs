@@ -144,6 +144,8 @@ pub fn running_minutes(session_start: NaiveDateTime, now: NaiveDateTime) -> Minu
 /// recorded break like any other: come back from a long lunch and the deduction
 /// is already gone while the clock is still running, instead of reappearing the
 /// moment the entry is written.
+// NOTE: date-blind — a session opened yesterday reads as a pause against today's
+// entries.
 pub fn provisional_net_for(
     entries: &[Entry],
     running_since: NaiveTime,

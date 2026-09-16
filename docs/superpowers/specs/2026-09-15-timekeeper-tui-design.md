@@ -250,7 +250,7 @@ daily_target_minutes = 468         # 7:48
 break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
-theme = "dark"                     # "dark" | "light"
+theme = "dark"                     # "dark" | "light" | "purple"
 extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies

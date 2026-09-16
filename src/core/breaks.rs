@@ -40,10 +40,23 @@ pub fn recorded_gaps(entries: &[Entry]) -> Minutes {
 
 /// [`recorded_gaps`] for callers that hold intervals rather than entries — the
 /// provisional net of a day whose last "entry" is the session still running.
+///
+/// Each pause is measured against the furthest end reached so far, not against
+/// the previous interval by start: an interval nested inside a longer one leaves
+/// no pause behind, and the pause after it starts where the longer one ended.
 pub fn gaps_between(intervals: &[(i32, i32)]) -> Minutes {
     let mut iv = intervals.to_vec();
     iv.sort_by_key(|(s, _)| *s);
-    Minutes(iv.windows(2).map(|w| (w[1].0 - w[0].1).max(0)).sum())
+    let mut gaps = 0;
+    let mut max_end = match iv.first() {
+        Some((_, e)) => *e,
+        None => return Minutes::ZERO,
+    };
+    for (s, e) in iv.iter().skip(1) {
+        gaps += (s - max_end).max(0);
+        max_end = max_end.max(*e);
+    }
+    Minutes(gaps)
 }
 
 /// The break deduction of a whole day: none once the day's recorded pauses reach
@@ -147,6 +160,24 @@ mod tests {
         // pause before it counts and the wrap does not.
         let day = [e(1, (8, 0), (12, 0)), e(2, (22, 0), (2, 0))];
         assert_eq!(recorded_gaps(&day), Minutes(600));
+    }
+
+    #[test]
+    fn an_interval_nested_in_another_is_no_pause() {
+        // 08:00–17:00 with 09:00–10:00 and 11:00–12:00 inside it: whatever those
+        // overlapping intervals mean, the clock never stopped, so there is no
+        // break to credit. Reachable through `provisional_net_for`, which adds
+        // the running session to the day's entries without an overlap check.
+        assert_eq!(
+            gaps_between(&[(480, 1020), (540, 600), (660, 720)]),
+            Minutes::ZERO
+        );
+        // And a real pause after the nested pair is measured from the furthest
+        // end reached so far, not from the end of the last interval by start.
+        assert_eq!(
+            gaps_between(&[(480, 1020), (540, 600), (1080, 1200)]),
+            Minutes(60)
+        );
     }
 
     #[test]

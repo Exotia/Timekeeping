@@ -142,7 +142,7 @@ impl Config {
     pub fn rules(&self) -> Rules {
         Rules {
             daily_target: Minutes(self.daily_target_minutes),
-            break_gap: Minutes(self.break_gap_minutes as i32),
+            break_gap: Minutes(i32::try_from(self.break_gap_minutes).unwrap_or(i32::MAX)),
             tiers: self
                 .break_tiers
                 .iter()
