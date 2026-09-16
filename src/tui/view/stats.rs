@@ -39,6 +39,9 @@ pub struct StatsView {
     /// The sum of the bucket balances — the chart's own total, which starts at
     /// `rules.start_date` and so can differ from `net - target` over the range.
     pub balance_total: Minutes,
+    /// Indices into `buckets` of the whole range's best and worst period. The
+    /// chart's footer names the best and worst of the periods it can show, which
+    /// is the same thing whenever the chart is not cut short.
     pub best: Option<usize>,
     pub worst: Option<usize>,
     /// Today, so a chart that cannot show every bucket can end at the one the
@@ -227,10 +230,16 @@ pub fn build_stats(
     };
     for day in &data.days {
         let s = day_stats(day, rules, cal, &ctx);
-        v.net += s.net;
-        v.target += s.target;
-        if s.missing {
-            v.missing += 1;
+        // The balance runs from the configured start date, exactly as the chart's
+        // buckets do, so the two totals on the screen cannot contradict each other.
+        // What was worked and which kinds the days had are facts about the range
+        // itself and stay whole.
+        if day.date >= rules.start_date {
+            v.net += s.net;
+            v.target += s.target;
+            if s.missing {
+                v.missing += 1;
+            }
         }
         for e in &day.entries {
             *totals.entry(e.project.clone()).or_default() += e.duration();
@@ -387,8 +396,11 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
         Span::styled("total ", Style::default().fg(t.muted)),
         minutes_span(v.balance_total, t),
     ];
-    for (label, idx) in [("best", v.best), ("worst", v.worst)] {
-        let Some(b) = idx.and_then(|i| v.buckets.get(i)) else {
+    // Over what is on show, so a chart that had to cut itself never names a
+    // period the reader cannot see.
+    let (best, worst) = best_worst(shown);
+    for (label, idx) in [("best", best), ("worst", worst)] {
+        let Some(b) = idx.and_then(|i| shown.get(i)) else {
             continue;
         };
         footer.push(Span::styled(
@@ -790,6 +802,41 @@ mod tests {
     }
 
     #[test]
+    fn the_projects_balance_matches_the_chart_total() {
+        // Tracking only starts on 9 September: the days before it are history the
+        // balance never counted, and the two panels must agree on that.
+        let mut r = rules();
+        r.start_date = d(2026, 9, 9);
+        let (from, to) = range_for(RangeKind::ThisMonth, d(2026, 9, 15));
+        let days = vec![
+            plus24(d(2026, 9, 1)),
+            missing(d(2026, 9, 2)),
+            plus24(d(2026, 9, 9)),
+            missing(d(2026, 9, 10)),
+        ];
+        let v = build_stats(
+            &stats_data(from, to, days),
+            &r,
+            &HolidayCalendar::default(),
+            d(2026, 9, 15),
+            30,
+            RangeKind::ThisMonth,
+        );
+        assert_eq!(v.balance_total, Minutes(24 - 468));
+        assert_eq!(v.net - v.target, v.balance_total);
+        // A work day before the start date is not a day anybody is missing.
+        assert_eq!(v.missing, 1);
+        // What was worked in the range is still what was worked in the range.
+        assert_eq!(v.total, Minutes(2 * 540));
+        let rows = render(100, 30, |f| {
+            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "total -07:24"), "{joined}");
+        assert!(contains(&rows, "balance -07:24"), "{joined}");
+    }
+
+    #[test]
     fn a_bar_area_of_one_column_still_draws() {
         // Both signs on show and no room to split: the zero line takes the column.
         assert_eq!(zero_column(0, 5, 5), 0);
@@ -847,6 +894,18 @@ mod tests {
         let plus = rows.iter().find(|r| r.contains("KW 36")).unwrap();
         let (bars, zero) = bars_and_zero(plus);
         assert!(bars.iter().all(|b| *b > zero), "{plus}");
+        // The axis row carries nothing but the zero, right under the zero line.
+        let axis = rows
+            .iter()
+            .find(|r| r.chars().nth(zero) == Some('0'))
+            .unwrap_or_else(|| panic!("no axis row with a 0 at column {zero}:\n{joined}"));
+        assert_eq!(
+            axis.chars()
+                .filter(|c| *c != ' ' && *c != '│')
+                .collect::<String>(),
+            "0",
+            "{axis}"
+        );
     }
 
     #[test]
@@ -886,6 +945,11 @@ mod tests {
         assert!(contains(&rows, "… Balance per month"), "{joined}");
         // The window ends at the month today is in.
         assert!(contains(&rows, "Sep"), "{joined}");
+        // January and February are off screen, so the footer must not name them;
+        // the three months on show are all flat, and there is no best among them.
+        assert!(!contains(&rows, "best Jan"), "{joined}");
+        assert!(!contains(&rows, "worst Feb"), "{joined}");
+        assert!(contains(&rows, "total "), "{joined}");
         // Every panel still has its frame.
         for title in ["Range", "Balance per month", "Projects", "Days"] {
             assert!(contains(&rows, title), "{title} missing:\n{joined}");
