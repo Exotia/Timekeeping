@@ -59,6 +59,40 @@ pub fn gaps_between(intervals: &[(i32, i32)]) -> Minutes {
     Minutes(gaps)
 }
 
+/// The seamless working sessions of a day.
+///
+/// Intervals are sorted by start and merged while the next one begins at or
+/// before the end reached so far: a project switch at noon, an overlap and an
+/// interval nested in a longer one all stay inside the same session. Any gap of
+/// a minute or more starts the next session.
+pub fn sessions(intervals: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut iv = intervals.to_vec();
+    iv.sort_by_key(|(s, _)| *s);
+    let mut out: Vec<(i32, i32)> = Vec::with_capacity(iv.len());
+    for (s, e) in iv {
+        match out.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// The break deduction of a whole day: the tier deduction of every seamless
+/// session on its own length, summed.
+///
+/// The statutory break belongs to the stretch actually worked without stopping,
+/// so a real pause splits the day and each part is judged on its own: two four-
+/// hour halves are charged twice for being over three hours, while the same
+/// hours worked straight through are charged once for being over six. A day
+/// without entries has no session and is not charged.
+pub fn session_deduction(intervals: &[(i32, i32)], tiers: &[BreakTier]) -> Minutes {
+    sessions(intervals)
+        .iter()
+        .map(|(s, e)| deduction(Minutes(e - s), tiers))
+        .sum()
+}
+
 /// The break deduction of a whole day: none once the day's recorded pauses reach
 /// `break_gap`, the tier deduction for `gross` otherwise.
 ///
@@ -213,5 +247,52 @@ mod tests {
             day_deduction(Minutes(540), Minutes::ZERO, &t, Minutes::ZERO),
             Minutes::ZERO
         );
+    }
+
+    #[test]
+    fn sessions_merge_what_the_clock_never_stopped_between() {
+        // A project switch at noon leaves no gap: one seamless session.
+        assert_eq!(sessions(&[(480, 720), (720, 1020)]), vec![(480, 1020)]);
+        // A single minute off already starts the next session.
+        assert_eq!(
+            sessions(&[(480, 720), (721, 1020)]),
+            vec![(480, 720), (721, 1020)]
+        );
+        // Overlapping intervals are one session, whatever order they arrive in…
+        assert_eq!(sessions(&[(660, 1020), (480, 720)]), vec![(480, 1020)]);
+        // …and one nested inside another neither splits it nor shortens it.
+        assert_eq!(sessions(&[(480, 1020), (540, 600)]), vec![(480, 1020)]);
+        assert_eq!(
+            sessions(&[(480, 1020), (540, 600), (1080, 1200)]),
+            vec![(480, 1020), (1080, 1200)]
+        );
+        assert_eq!(sessions(&[]), Vec::<(i32, i32)>::new());
+    }
+
+    #[test]
+    fn session_deduction_charges_each_session_on_its_own_length() {
+        let t = default_tiers();
+        // 08–12 and 12–17: one nine-hour session, the top tier.
+        assert_eq!(
+            session_deduction(&[(480, 720), (720, 1020)], &t),
+            Minutes(48)
+        );
+        // 08–12 and 12:45–17: 4h and 4:15, each over three hours.
+        assert_eq!(
+            session_deduction(&[(480, 720), (765, 1020)], &t),
+            Minutes(36)
+        );
+        // 08–14:30 and 14:31–17: 6:30 is over six hours, 2:29 is under three.
+        assert_eq!(
+            session_deduction(&[(480, 870), (871, 1020)], &t),
+            Minutes(48)
+        );
+        // Two short sessions and one of four hours.
+        assert_eq!(
+            session_deduction(&[(480, 600), (630, 720), (780, 1020)], &t),
+            Minutes(18)
+        );
+        // A day without entries is not charged.
+        assert_eq!(session_deduction(&[], &t), Minutes::ZERO);
     }
 }

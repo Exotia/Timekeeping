@@ -111,17 +111,21 @@ tk config --start 2026-01-01 --balance -2:30
 tk config --hours decimal                   # print 7.80h instead of 07:48
 ```
 
-**How breaks apply.** A pause you recorded yourself counts. If the gaps
-between a day's entries add up to at least `break_gap_minutes` (30 by default),
-nothing is deducted that day — you took a real break. Otherwise, either because
-the entries run seamlessly (a project switch at noon is not a break) or because
-the gaps are too short, the tier table applies: `tk` picks the tier with the
-largest `after_minutes` that is *strictly below* the day's gross and subtracts
-that tier's `deduct_minutes`. With the defaults, 3:00 gross loses nothing, 3:01
-loses 18 minutes, and anything over 6:00 loses 48 minutes. A day with no
-entries never gets a deduction. While you are clocked in, the running session
-counts as an entry too, so the lunch you just came back from already cancels
-the deduction in `tk status`.
+**How breaks apply.** The deduction is charged per *session*, not per day. Your
+entries are grouped into sessions: entries that touch or overlap are one
+session — a project switch at noon is not a break — and any gap of a minute or
+more starts a new one. Each session is then charged on its own length: `tk`
+picks the tier with the largest `after_minutes` *strictly below* that session's
+length and subtracts its `deduct_minutes`, and the day's deduction is the sum.
+With the defaults, 3:00 loses nothing, 3:01 loses 18 minutes and anything over
+6:00 loses 48. So 08:00–12:00 plus 12:00–17:00 is one nine-hour session and
+loses 48 minutes (net 8:12), while the same hours with a 45-minute lunch —
+08:00–12:00 plus 12:45–17:00 — are two sessions of 4:00 and 4:15 and lose 18
+each (net 7:39). Take a proper lunch and your afternoon starts a fresh session,
+so a long day charged once for being over six hours becomes two shorter ones.
+A day with no entries never gets a deduction. While you are clocked in, the
+running session counts too, so `tk status` shows the same figures the day will
+have once you clock out.
 
 **Theme overrides.** Keys inside `[theme_overrides]` are role names; values are
 `"#rrggbb"` or a named terminal color. Recognised roles: `positive`,

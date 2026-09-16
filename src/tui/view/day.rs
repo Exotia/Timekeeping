@@ -285,13 +285,14 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_break_follows_the_recorded_pause() {
+    fn the_footer_break_follows_the_sessions_of_the_day() {
         let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
-        // 12:00 → 12:45 is a real break: the day keeps all 8:15 of its gross.
+        // 12:00 → 12:45 splits the day in two: 4:00 and 4:15, each over three
+        // hours, so each loses 18 minutes.
         let rows = day_rows(date, &[(t(8, 0), t(12, 0)), (t(12, 45), t(17, 0))]);
         assert!(contains(&rows, "gross +08:15"), "{}", rows.join("\n"));
-        assert!(contains(&rows, "break -00:00"), "{}", rows.join("\n"));
-        assert!(contains(&rows, "net +08:15"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "break -00:36"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "net +07:39"), "{}", rows.join("\n"));
         // Straight on at noon — a project switch, not a break — and the tier applies.
         let rows = day_rows(date, &[(t(8, 0), t(12, 0)), (t(12, 0), t(17, 0))]);
         assert!(contains(&rows, "gross +09:00"), "{}", rows.join("\n"));
@@ -408,7 +409,8 @@ mod tests {
         assert!(contains(&rows, "Alpha"));
         assert!(rows.iter().any(|r| r.contains('▶') && r.contains("Beta")));
         assert!(contains(&rows, "gross +06:00"));
-        // 12:00–13:00 is a recorded break, so nothing is deducted on top of it.
+        // 12:00–13:00 splits the day into two three-hour sessions, and three
+        // hours exactly is under the first tier: nothing is deducted.
         assert!(contains(&rows, "break -00:00"));
         assert!(contains(&rows, "net +06:00"));
     }

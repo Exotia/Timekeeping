@@ -140,19 +140,21 @@ carry a target and never show as missing.
 **Gross.** Sum of entry durations for the day. An entry whose `end <= start`
 wraps to the next day (duration = end + 24h − start).
 
-**Break deduction.** If the entries of a day contain recorded breaks (gaps
-between consecutive entries) totalling at least `break_gap_minutes` (config,
-default 30), no automatic break deduction is applied that day: the user took a
-real break. Otherwise — the entries run seamlessly, e.g. after a project
-switch, or the gaps are shorter than the threshold — the full tier deduction
-for the day's gross applies. `break_tiers` is a list of
-`{after_minutes, deduct_minutes}` sorted ascending; the tier deduction is
-`deduct_minutes` of the last tier whose `after_minutes < gross`, else 0.
-Applied once per day on the daily gross, not per entry. Default tiers: over
-180 → 18, over 360 → 48. A `break_gap_minutes` of 0 switches the automatic
-deduction off altogether, because a day without a single pause still satisfies
-`gaps >= break_gap_minutes`. While the user is clocked in, the running session
-counts as one more entry, so the pause before it already cancels the deduction.
+**Break deduction.** The entries of a day are grouped into *sessions*:
+consecutive entries whose intervals touch or overlap (no gap) form one session,
+and any gap of at least one minute starts a new one. A back-to-back project
+switch therefore stays a single session, while a real pause of any length
+splits the day. `break_tiers` is a list of `{after_minutes, deduct_minutes}`
+sorted ascending; the tier deduction for a length is `deduct_minutes` of the
+last tier whose `after_minutes` is strictly below it, else 0. That deduction is
+applied to **each session's own length**, and the day's deduction is the sum.
+Default tiers: over 180 → 18, over 360 → 48. So 08–12 plus 12–17 is one
+nine-hour session and loses 48; 08–12 plus 12:45–17 is 4:00 plus 4:15 and loses
+18 + 18 = 36; 08–14:30 plus 14:31–17 is 6:30 plus 2:29 and loses 48 + 0. A day
+without entries is never charged, and an entry that crosses midnight is one
+session of its normalised length. While the user is clocked in, the running
+session counts as one more interval, so it merges with the entry it continues
+and stands alone after a pause.
 
 **Net.** `gross − deduction`, never negative.
 

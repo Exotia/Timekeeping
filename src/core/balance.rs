@@ -1,8 +1,8 @@
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use super::{
-    BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, day_deduction,
-    gaps_between, minutes_of, recorded_gaps,
+    BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, minutes_of, recorded_gaps,
+    session_deduction,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,11 +55,7 @@ pub fn effective_kind(stored: Option<&DayKind>, date: NaiveDate, cal: &HolidayCa
 pub fn day_stats(day: &Day, rules: &Rules, cal: &HolidayCalendar, ctx: &TodayCtx) -> DayStats {
     let gross: Minutes = day.entries.iter().map(Entry::duration).sum();
     let gaps = recorded_gaps(&day.entries);
-    let ded = if gross > Minutes::ZERO {
-        day_deduction(gross, gaps, &rules.tiers, rules.break_gap)
-    } else {
-        Minutes::ZERO
-    };
+    let ded = session_deduction(&intervals_of(&day.entries), &rules.tiers);
     let net = Minutes((gross - ded).0.max(0));
     let is_weekend = !is_working_day(day.date);
     let is_past = day.date < ctx.today;
@@ -101,6 +97,10 @@ pub fn running_balance<'a>(
             .filter(|s| s.date >= rules.start_date)
             .map(|s| s.balance)
             .sum::<Minutes>()
+}
+
+fn intervals_of(entries: &[Entry]) -> Vec<(i32, i32)> {
+    entries.iter().map(Entry::interval).collect()
 }
 
 fn normalized(start: NaiveTime, end: NaiveTime) -> (i32, i32) {
@@ -153,10 +153,10 @@ pub fn provisional_net_for(
     rules: &Rules,
 ) -> Minutes {
     let gross = entries.iter().map(Entry::duration).sum::<Minutes>() + running;
-    let mut ivs: Vec<(i32, i32)> = entries.iter().map(Entry::interval).collect();
+    let mut ivs = intervals_of(entries);
     let s = minutes_of(running_since);
     ivs.push((s, s + running.0));
-    let ded = day_deduction(gross, gaps_between(&ivs), &rules.tiers, rules.break_gap);
+    let ded = session_deduction(&ivs, &rules.tiers);
     Minutes((gross - ded).0.max(0))
 }
 
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn deduction_is_per_day_not_per_entry() {
+    fn deduction_is_per_session_not_per_entry() {
         let day = work(
             d(2026, 9, 14),
             vec![
@@ -428,11 +428,12 @@ mod tests {
     fn provisional_net_includes_running_entry() {
         let today = d(2026, 9, 15);
         let ex = vec![entry(1, today, t(8, 0), t(12, 0))]; // 240
-        // running since 13:00, now 15:30 → +150 → gross 390, and the hour of lunch
-        // before the clock-in is break enough for the day.
+        // Running since 13:00, now 15:30 → +150 → gross 390. The hour of lunch
+        // splits the day: the 4:00 morning loses 18, the 2:30 so far loses
+        // nothing.
         assert_eq!(
             provisional_net(&ex, t(13, 0), t(15, 30), &rules()),
-            Minutes(390)
+            Minutes(390 - 18)
         );
     }
 
@@ -456,12 +457,14 @@ mod tests {
         let ex = vec![entry(1, d(2026, 9, 14), t(8, 0), t(12, 0))]; // 240
         assert_eq!(
             provisional_net_for(&ex, t(23, 0), running_minutes(start, now), &rules()),
-            Minutes(240 + 120) // the whole afternoon off is break enough
+            // Two sessions: the 4:00 morning loses 18, the two hours since 23:00
+            // lose nothing.
+            Minutes(240 + 120 - 18)
         );
     }
 
     #[test]
-    fn a_recorded_break_cancels_the_deduction() {
+    fn the_deduction_is_charged_per_seamless_session() {
         let day = d(2026, 9, 14);
         let mk = |entries| {
             day_stats(
@@ -471,7 +474,8 @@ mod tests {
                 &ctx(d(2026, 9, 15), false),
             )
         };
-        // Seamless: a project switch at noon is not a break.
+        // Seamless: a project switch at noon is not a pause, so the whole nine
+        // hours are one session and lose the top tier.
         let s = mk(vec![
             entry(1, day, t(8, 0), t(12, 0)),
             entry(2, day, t(12, 0), t(17, 0)),
@@ -479,76 +483,68 @@ mod tests {
         assert_eq!(s.gaps, Minutes::ZERO);
         assert_eq!(s.deduction, Minutes(48));
         assert_eq!(s.net, Minutes(492)); // 8:12
-        // A 45-minute pause: the user took a real break, nothing is deducted.
+        // A 45-minute lunch splits the day into 4:00 and 4:15; each is over three
+        // hours, so each loses 18 minutes.
         let s = mk(vec![
             entry(1, day, t(8, 0), t(12, 0)),
             entry(2, day, t(12, 45), t(17, 0)),
         ]);
         assert_eq!(s.gaps, Minutes(45));
-        assert_eq!(s.deduction, Minutes::ZERO);
-        assert_eq!(s.net, Minutes(495)); // 8:15
-        // A 20-minute pause is below the threshold: the full tier applies.
+        assert_eq!(s.deduction, Minutes(36));
+        assert_eq!(s.net, Minutes(459)); // 7:39
+        // A single minute off is already a new session: 6:30 loses 48, 2:29 loses
+        // nothing.
         let s = mk(vec![
-            entry(1, day, t(8, 0), t(12, 0)),
-            entry(2, day, t(12, 20), t(17, 0)),
+            entry(1, day, t(8, 0), t(14, 30)),
+            entry(2, day, t(14, 31), t(17, 0)),
         ]);
-        assert_eq!(s.gaps, Minutes(20));
         assert_eq!(s.deduction, Minutes(48));
-        assert_eq!(s.net, Minutes(472)); // 7:52
-        // Two short pauses reaching the threshold together also cancel it.
+        assert_eq!(s.net, Minutes(539 - 48));
+        // Three short sessions: only the four-hour one is over a tier.
         let s = mk(vec![
-            entry(1, day, t(8, 0), t(11, 0)),
-            entry(2, day, t(11, 15), t(13, 0)),
-            entry(3, day, t(13, 15), t(17, 0)),
+            entry(1, day, t(8, 0), t(10, 0)),
+            entry(2, day, t(10, 30), t(12, 0)),
+            entry(3, day, t(13, 0), t(17, 0)),
         ]);
-        assert_eq!(s.gaps, Minutes(30));
-        assert_eq!(s.deduction, Minutes::ZERO);
-        // One entry has no pause to record, so it keeps its deduction.
+        assert_eq!(s.deduction, Minutes(18));
+        assert_eq!(s.net, Minutes(450 - 18));
+        // One entry is one session, and it keeps its deduction.
         let s = mk(vec![entry(1, day, t(8, 0), t(17, 0))]);
         assert_eq!(s.gaps, Minutes::ZERO);
         assert_eq!(s.deduction, Minutes(48));
-        // Overlapping entries do not fabricate a negative pause.
+        // Overlapping entries never stopped the clock: still one session.
         let s = mk(vec![
             entry(1, day, t(8, 0), t(12, 0)),
             entry(2, day, t(11, 0), t(17, 0)),
         ]);
         assert_eq!(s.gaps, Minutes::ZERO);
         assert_eq!(s.deduction, Minutes(48));
+        // A day without entries is not charged.
+        assert_eq!(mk(vec![]).deduction, Minutes::ZERO);
+        // An entry over midnight is one session of its normalised length: 22:00
+        // to 05:00 is seven hours.
+        let s = mk(vec![entry(1, day, t(22, 0), t(5, 0))]);
+        assert_eq!(s.gross, Minutes(420));
+        assert_eq!(s.deduction, Minutes(48));
     }
 
     #[test]
-    fn a_break_gap_of_zero_never_deducts() {
-        let day = d(2026, 9, 14);
-        let r = Rules {
-            break_gap: Minutes::ZERO,
-            ..rules()
-        };
-        let s = day_stats(
-            &work(day, vec![entry(1, day, t(8, 0), t(17, 0))]),
-            &r,
-            &cal(),
-            &ctx(d(2026, 9, 15), false),
-        );
-        assert_eq!(s.deduction, Minutes::ZERO);
-        assert_eq!(s.net, Minutes(540));
-    }
-
-    #[test]
-    fn the_running_session_closes_a_gap_of_its_own() {
+    fn the_running_session_is_a_session_of_its_own() {
         let today = d(2026, 9, 15);
         let ex = vec![entry(1, today, t(8, 0), t(12, 0))]; // 240
-        // Back at 12:45 after a 45-minute lunch, now 17:00: 240 + 255 = 495 gross,
-        // and the lunch has already paid for the break.
+        // Back at 12:45 after a 45-minute lunch, now 17:00: 240 + 255 = 495 gross
+        // in two sessions, each over three hours, so 18 + 18 comes off.
         assert_eq!(
             provisional_net_for(&ex, t(12, 45), Minutes(255), &rules()),
-            Minutes(495)
+            Minutes(495 - 36)
         );
-        // Straight back at 12:00: no pause, so the tier still applies.
+        // Straight back at 12:00: one seamless nine-hour session, top tier.
         assert_eq!(
             provisional_net_for(&ex, t(12, 0), Minutes(300), &rules()),
             Minutes(540 - 48)
         );
-        // A session still on its first minute is no interval at all.
+        // A session still on its first minute is no interval at all: it touches
+        // the morning and leaves it a four-hour session.
         assert_eq!(
             provisional_net_for(&ex, t(12, 0), Minutes::ZERO, &rules()),
             Minutes(240 - 18)
