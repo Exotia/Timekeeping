@@ -123,7 +123,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         quit: false,
         redraw: true,
         worker,
-        stats_range: msg::RangeKind::ThisMonth,
+        stats_range: msg::RangeKind::Month,
         form: None,
         settings: None,
         clock_picker: None,

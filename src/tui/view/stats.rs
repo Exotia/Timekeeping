@@ -51,34 +51,49 @@ pub struct StatsView {
     pub today: NaiveDate,
 }
 
-/// The (from, to) date range covered by a given `RangeKind`, relative to `today`.
-pub fn range_for(kind: RangeKind, today: NaiveDate) -> (NaiveDate, NaiveDate) {
+/// The (from, to) date range of the `kind` period that contains `anchor`.
+pub fn range_for(kind: RangeKind, anchor: NaiveDate) -> (NaiveDate, NaiveDate) {
     match kind {
         RangeKind::Week => {
-            let monday =
-                today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
-            (monday, monday + chrono::Duration::days(6))
+            let monday = anchor - Duration::days(anchor.weekday().num_days_from_monday() as i64);
+            (monday, monday + Duration::days(6))
         }
-        RangeKind::ThisMonth => month_range(today.year(), today.month()),
-        RangeKind::LastMonth => {
-            let (y, m) = if today.month() == 1 {
-                (today.year() - 1, 12)
-            } else {
-                (today.year(), today.month() - 1)
-            };
-            month_range(y, m)
-        }
+        RangeKind::Month => month_range(anchor.year(), anchor.month()),
         RangeKind::Quarter => {
-            let q0 = (today.month() - 1) / 3 * 3 + 1;
+            let q0 = (anchor.month() - 1) / 3 * 3 + 1;
             (
-                month_range(today.year(), q0).0,
-                month_range(today.year(), q0 + 2).1,
+                month_range(anchor.year(), q0).0,
+                month_range(anchor.year(), q0 + 2).1,
             )
         }
         RangeKind::Year => (
-            NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap(),
-            NaiveDate::from_ymd_opt(today.year(), 12, 31).unwrap(),
+            NaiveDate::from_ymd_opt(anchor.year(), 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(anchor.year(), 12, 31).unwrap(),
         ),
+    }
+}
+
+/// `date` shifted by `n` calendar months, keeping its day of the month where the
+/// target month has one: 31 January plus a month is 28 February.
+pub fn add_months(date: NaiveDate, n: i32) -> NaiveDate {
+    let m = date.month() as i32 - 1 + n;
+    let (y, m) = (
+        date.year() + m.div_euclid(12),
+        (m.rem_euclid(12) + 1) as u32,
+    );
+    let last = month_range(y, m).1;
+    NaiveDate::from_ymd_opt(y, m, date.day().min(last.day())).unwrap()
+}
+
+/// The anchor moved `steps` whole `kind` periods, forwards or backwards. The
+/// period itself comes from [`range_for`], so a week anchored on a Sunday still
+/// names the Monday-to-Sunday week it lands in.
+pub fn shift_anchor(kind: RangeKind, anchor: NaiveDate, steps: i32) -> NaiveDate {
+    match kind {
+        RangeKind::Week => anchor + Duration::days(7 * steps as i64),
+        RangeKind::Month => add_months(anchor, steps),
+        RangeKind::Quarter => add_months(anchor, 3 * steps),
+        RangeKind::Year => add_months(anchor, 12 * steps),
     }
 }
 
@@ -104,7 +119,7 @@ pub struct Bucket {
 pub fn granularity_for(kind: RangeKind) -> Granularity {
     match kind {
         RangeKind::Week => Granularity::Day,
-        RangeKind::ThisMonth | RangeKind::LastMonth => Granularity::Week,
+        RangeKind::Month => Granularity::Week,
         RangeKind::Quarter | RangeKind::Year => Granularity::Month,
     }
 }
@@ -474,14 +489,13 @@ pub fn draw_stats(
 
     let entries = [
         (RangeKind::Week, "1", "week"),
-        (RangeKind::ThisMonth, "2", "month"),
-        (RangeKind::LastMonth, "3", "last month"),
-        (RangeKind::Quarter, "4", "quarter"),
-        (RangeKind::Year, "5", "year"),
+        (RangeKind::Month, "2", "month"),
+        (RangeKind::Quarter, "3", "quarter"),
+        (RangeKind::Year, "4", "year"),
     ];
     let dates = format!("{} → {}", v.from, v.to);
-    // Five ranges and the dates are wider than 80 columns with the airy gaps the
-    // line has room for elsewhere, and the dates are the part worth keeping.
+    // A narrow terminal cannot have both the airy gaps and the dates, and the
+    // dates are the part worth keeping.
     let roomy: usize = entries
         .iter()
         .map(|(_, k, l)| k.chars().count() + l.chars().count() + 3 + 3)
@@ -604,12 +618,8 @@ mod tests {
             (d(2026, 9, 14), d(2026, 9, 20))
         );
         assert_eq!(
-            range_for(RangeKind::ThisMonth, today),
+            range_for(RangeKind::Month, today),
             (d(2026, 9, 1), d(2026, 9, 30))
-        );
-        assert_eq!(
-            range_for(RangeKind::LastMonth, today),
-            (d(2026, 8, 1), d(2026, 8, 31))
         );
         assert_eq!(
             range_for(RangeKind::Quarter, today),
@@ -619,9 +629,81 @@ mod tests {
             range_for(RangeKind::Year, today),
             (d(2026, 1, 1), d(2026, 12, 31))
         );
+    }
+
+    /// Every range is the period the anchor falls in, not a period relative to
+    /// today: the screen navigates by moving the anchor.
+    #[test]
+    fn ranges_follow_the_anchor() {
         assert_eq!(
-            range_for(RangeKind::LastMonth, d(2026, 1, 10)),
-            (d(2025, 12, 1), d(2025, 12, 31))
+            range_for(RangeKind::Month, d(2025, 8, 3)),
+            (d(2025, 8, 1), d(2025, 8, 31))
+        );
+        assert_eq!(
+            range_for(RangeKind::Quarter, d(2026, 11, 20)),
+            (d(2026, 10, 1), d(2026, 12, 31))
+        );
+        assert_eq!(
+            range_for(RangeKind::Year, d(2024, 2, 29)),
+            (d(2024, 1, 1), d(2024, 12, 31))
+        );
+    }
+
+    #[test]
+    fn months_are_added_with_the_day_clamped() {
+        assert_eq!(add_months(d(2026, 1, 31), 1), d(2026, 2, 28));
+        assert_eq!(add_months(d(2026, 3, 31), -1), d(2026, 2, 28));
+        assert_eq!(add_months(d(2026, 1, 15), -1), d(2025, 12, 15));
+        assert_eq!(add_months(d(2026, 12, 15), 1), d(2027, 1, 15));
+        assert_eq!(add_months(d(2026, 9, 15), 0), d(2026, 9, 15));
+        assert_eq!(add_months(d(2026, 5, 10), 25), d(2028, 6, 10));
+    }
+
+    #[test]
+    fn the_anchor_shifts_by_whole_periods() {
+        // A week from a Sunday still lands on the Sunday a week away, and the
+        // range it names is that week, Monday to Sunday.
+        assert_eq!(
+            shift_anchor(RangeKind::Week, d(2026, 9, 20), -1),
+            d(2026, 9, 13)
+        );
+        assert_eq!(
+            range_for(
+                RangeKind::Week,
+                shift_anchor(RangeKind::Week, d(2026, 9, 20), -1)
+            ),
+            (d(2026, 9, 7), d(2026, 9, 13))
+        );
+        assert_eq!(
+            shift_anchor(RangeKind::Week, d(2026, 9, 15), 2),
+            d(2026, 9, 29)
+        );
+        // 31 January plus a month is the 28th: February has no 31st.
+        assert_eq!(
+            shift_anchor(RangeKind::Month, d(2026, 1, 31), 1),
+            d(2026, 2, 28)
+        );
+        // A quarter back from November is the third quarter of the year, and a
+        // quarter on from November is the first of the next.
+        assert_eq!(
+            range_for(
+                RangeKind::Quarter,
+                shift_anchor(RangeKind::Quarter, d(2026, 11, 20), 1)
+            ),
+            (d(2027, 1, 1), d(2027, 3, 31))
+        );
+        assert_eq!(
+            shift_anchor(RangeKind::Quarter, d(2026, 11, 20), -1),
+            d(2026, 8, 20)
+        );
+        // A year on from a leap day is the 28th of the following February.
+        assert_eq!(
+            shift_anchor(RangeKind::Year, d(2024, 2, 29), 1),
+            d(2025, 2, 28)
+        );
+        assert_eq!(
+            shift_anchor(RangeKind::Year, d(2026, 9, 15), -1),
+            d(2025, 9, 15)
         );
     }
 
@@ -677,8 +759,7 @@ mod tests {
     #[test]
     fn granularities() {
         assert_eq!(granularity_for(RangeKind::Week), Granularity::Day);
-        assert_eq!(granularity_for(RangeKind::ThisMonth), Granularity::Week);
-        assert_eq!(granularity_for(RangeKind::LastMonth), Granularity::Week);
+        assert_eq!(granularity_for(RangeKind::Month), Granularity::Week);
         assert_eq!(granularity_for(RangeKind::Quarter), Granularity::Month);
         assert_eq!(granularity_for(RangeKind::Year), Granularity::Month);
     }
@@ -702,7 +783,7 @@ mod tests {
 
     #[test]
     fn month_range_buckets_by_iso_week() {
-        let (from, to) = range_for(RangeKind::ThisMonth, d(2026, 9, 15));
+        let (from, to) = range_for(RangeKind::Month, d(2026, 9, 15));
         let b = buckets_of(vec![], from, to, Granularity::Week);
         // 1 September 2026 is a Tuesday, so the first (partial) week is KW 36.
         assert_eq!(
@@ -728,7 +809,7 @@ mod tests {
 
     #[test]
     fn bucket_balances_sum_their_days() {
-        let (from, to) = range_for(RangeKind::ThisMonth, d(2026, 9, 15));
+        let (from, to) = range_for(RangeKind::Month, d(2026, 9, 15));
         let days = vec![
             plus24(d(2026, 9, 1)),
             missing(d(2026, 9, 8)),
@@ -760,7 +841,7 @@ mod tests {
 
     #[test]
     fn best_and_worst_buckets() {
-        let (from, to) = range_for(RangeKind::ThisMonth, d(2026, 9, 15));
+        let (from, to) = range_for(RangeKind::Month, d(2026, 9, 15));
         let days = vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))];
         let flat = buckets_of(vec![], from, to, Granularity::Week);
         assert_eq!((best_worst(&flat)), (None, None));
@@ -830,7 +911,7 @@ mod tests {
         // balance never counted, and the two panels must agree on that.
         let mut r = rules();
         r.start_date = d(2026, 9, 9);
-        let (from, to) = range_for(RangeKind::ThisMonth, d(2026, 9, 15));
+        let (from, to) = range_for(RangeKind::Month, d(2026, 9, 15));
         let days = vec![
             plus24(d(2026, 9, 1)),
             missing(d(2026, 9, 2)),
@@ -843,7 +924,7 @@ mod tests {
             &HolidayCalendar::default(),
             d(2026, 9, 15),
             30,
-            RangeKind::ThisMonth,
+            RangeKind::Month,
         );
         assert_eq!(v.balance_total, Minutes(24 - 468));
         assert_eq!(v.net - v.target, v.balance_total);
@@ -862,7 +943,7 @@ mod tests {
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Hm,
             )
         });
@@ -901,7 +982,7 @@ mod tests {
     #[test]
     fn renders_in_decimal_hours() {
         let v = view(
-            RangeKind::ThisMonth,
+            RangeKind::Month,
             vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
         );
         let rows = render(100, 30, |f| {
@@ -910,7 +991,7 @@ mod tests {
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Decimal,
             )
         });
@@ -934,7 +1015,7 @@ mod tests {
         assert_eq!(zero_column(10, 0, 5), 0);
         assert_eq!(zero_column(10, 5, 0), 9);
         let v = view(
-            RangeKind::ThisMonth,
+            RangeKind::Month,
             vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
         );
         // Far below the minimum terminal, but a panic here would take the app down.
@@ -944,7 +1025,7 @@ mod tests {
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Hm,
             )
         });
@@ -971,14 +1052,14 @@ mod tests {
                 "the range is cut at {w} columns:\n{joined}"
             );
             assert!(contains(&rows, "[1] week"), "{joined}");
-            assert!(contains(&rows, "[5] year"), "{joined}");
+            assert!(contains(&rows, "[4] year"), "{joined}");
         }
     }
 
     #[test]
     fn month_chart_draws_a_bar_per_week() {
         let v = view(
-            RangeKind::ThisMonth,
+            RangeKind::Month,
             vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
         );
         let rows = render(100, 30, |f| {
@@ -987,7 +1068,7 @@ mod tests {
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Hm,
             )
         });
@@ -1023,14 +1104,14 @@ mod tests {
 
     #[test]
     fn a_negative_only_chart_grows_to_the_left() {
-        let v = view(RangeKind::ThisMonth, vec![missing(d(2026, 9, 8))]);
+        let v = view(RangeKind::Month, vec![missing(d(2026, 9, 8))]);
         let rows = render(100, 30, |f| {
             draw_stats(
                 f,
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Hm,
             )
         });
@@ -1090,7 +1171,7 @@ mod tests {
 
     #[test]
     fn an_empty_range_draws_no_chart() {
-        let mut v = view(RangeKind::ThisMonth, vec![]);
+        let mut v = view(RangeKind::Month, vec![]);
         v.buckets.clear();
         let rows = render(100, 30, |f| {
             draw_stats(
@@ -1098,7 +1179,7 @@ mod tests {
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Hm,
             )
         });
@@ -1150,7 +1231,7 @@ mod tests {
             &HolidayCalendar::default(),
             d(2026, 9, 15),
             30,
-            RangeKind::ThisMonth,
+            RangeKind::Month,
         );
         // Net per project: Alpha's eight-hour day loses the 48-minute tier and
         // Beta's four-hour one loses 18.
@@ -1183,7 +1264,7 @@ mod tests {
                 f.area(),
                 &Theme::dark(),
                 &v,
-                RangeKind::ThisMonth,
+                RangeKind::Month,
                 HoursFormat::Hm,
             )
         });
@@ -1198,8 +1279,7 @@ mod tests {
         ));
         assert!(contains(&rows, "[1] week"));
         assert!(contains(&rows, "[2] month"));
-        assert!(contains(&rows, "[3] last month"));
-        assert!(contains(&rows, "[4] quarter"));
-        assert!(contains(&rows, "[5] year"));
+        assert!(contains(&rows, "[3] quarter"));
+        assert!(contains(&rows, "[4] year"));
     }
 }

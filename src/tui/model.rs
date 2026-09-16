@@ -453,11 +453,7 @@ impl Model {
                 }
             }
             Msg::SelectMonth(n) => {
-                let (y, m) = (self.selected.year(), self.selected.month() as i32 - 1 + n);
-                let (y, m) = (y + m.div_euclid(12), (m.rem_euclid(12) + 1) as u32);
-                let last = super::worker::month_range(y, m).1;
-                self.selected =
-                    NaiveDate::from_ymd_opt(y, m, self.selected.day().min(last.day())).unwrap();
+                self.selected = super::view::stats::add_months(self.selected, n);
                 self.load_month();
             }
             Msg::GoToday => {
@@ -879,9 +875,8 @@ impl Model {
             Screen::Stats => &[
                 ("1", "week"),
                 ("2", "month"),
-                ("3", "last month"),
-                ("4", "quarter"),
-                ("5", "year"),
+                ("3", "quarter"),
+                ("4", "year"),
                 ("u", "units"),
                 ("Esc", "back"),
             ],
@@ -945,9 +940,8 @@ impl Model {
             Screen::Stats => &[
                 ("1", "this week"),
                 ("2", "this month"),
-                ("3", "last month"),
-                ("4", "this quarter"),
-                ("5", "this year"),
+                ("3", "this quarter"),
+                ("4", "this year"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
             ],
@@ -1020,7 +1014,7 @@ pub mod testing {
             quit: false,
             redraw: false,
             worker: Worker { tx },
-            stats_range: RangeKind::ThisMonth,
+            stats_range: RangeKind::Month,
             form: None,
             settings: None,
             clock_picker: None,

@@ -320,11 +320,10 @@ restart.
 
 | Key | Action |
 | --- | --- |
-| `1` | This week (Monday … Sunday) |
-| `2` | This month |
-| `3` | Last month |
-| `4` | This quarter |
-| `5` | This year |
+| `1` | Week (Monday … Sunday) |
+| `2` | Month |
+| `3` | Quarter |
+| `4` | Year |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |

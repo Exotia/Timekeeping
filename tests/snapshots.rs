@@ -252,7 +252,7 @@ fn stats_screen_80x24_year() {
         "a row overflows 80 columns:\n{joined}"
     );
     assert!(
-        out.iter().any(|r| r.contains("[5] year")),
+        out.iter().any(|r| r.contains("[4] year")),
         "range selector missing:\n{joined}"
     );
     assert!(
@@ -297,7 +297,7 @@ fn stats_screen_80x24_year() {
         "a panel lost its top border:\n{joined}"
     );
     assert!(
-        out.iter().any(|r| r.contains("5 year")),
+        out.iter().any(|r| r.contains("4 year")),
         "stats key hints missing:\n{joined}"
     );
 }

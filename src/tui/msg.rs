@@ -5,13 +5,17 @@ use chrono::{NaiveDate, NaiveTime};
 use crate::core::{Day, DayKind, Minutes, Project};
 use crate::store::Session;
 
+/// A period length. Which period is on screen follows the statistics screen's
+/// anchor date, which `[`, `]` and `t` move.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RangeKind {
-    /// The ISO week (Monday … Sunday) `today` falls in.
+    /// The ISO week (Monday … Sunday) the anchor falls in.
     Week,
-    ThisMonth,
-    LastMonth,
+    /// The calendar month the anchor falls in.
+    Month,
+    /// The calendar quarter the anchor falls in.
     Quarter,
+    /// The calendar year the anchor falls in.
     Year,
 }
 
