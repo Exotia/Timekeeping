@@ -125,6 +125,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         stats_range: msg::RangeKind::ThisMonth,
         form: None,
         settings: None,
+        clock_picker: None,
     };
     model.load_month();
 

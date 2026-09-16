@@ -28,7 +28,7 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Enter => Msg::OpenDay,
             Key::Char('s') => Msg::OpenStats,
             Key::Char('c') => Msg::OpenSettings,
-            Key::Char('i') => Msg::ClockIn,
+            Key::Char('i') => Msg::OpenClockPicker,
             Key::Char('o') => Msg::ClockOut,
             Key::Char('v') => Msg::SetKind(DayKind::Vacation),
             Key::Char('f') => Msg::SetKind(DayKind::Flex),

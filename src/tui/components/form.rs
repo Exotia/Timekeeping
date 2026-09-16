@@ -11,15 +11,14 @@
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyModifiers};
-use tuirealm::props::{AttrValue, Attribute, QueryResult, Style};
+use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Layout, Rect};
-use tuirealm::ratatui::style::Modifier;
-use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::text::Line;
 use tuirealm::ratatui::widgets::{Clear, Paragraph};
 use tuirealm::state::State;
 
-use super::field_form::{FieldForm, FieldFormEvent, FieldSpec};
+use super::field_form::{FieldForm, FieldFormEvent, FieldSpec, filter_projects, picker_line};
 use crate::tui::msg::{FormData, Msg, UserEvent};
 use crate::tui::theme::Theme;
 use crate::tui::view::chrome::centered;
@@ -106,12 +105,7 @@ impl EntryForm {
 
     /// Known projects whose name contains the typed text (case-insensitive).
     fn matches(&self) -> Vec<String> {
-        let q = self.form.value(PROJECT).trim().to_lowercase();
-        self.projects
-            .iter()
-            .filter(|p| p.to_lowercase().contains(&q))
-            .cloned()
-            .collect()
+        filter_projects(&self.projects, &self.form.value(PROJECT))
     }
 
     /// Copy the highlighted project into the field. Without a match the typed text
@@ -124,34 +118,11 @@ impl EntryForm {
 
     /// The row of project chips under the project field.
     fn picker_line(&self) -> Line<'static> {
-        let t = self.form.theme();
-        let (muted, text, bg_selected) = (t.muted, t.text, t.bg_selected);
-        let m = self.matches();
-        if m.is_empty() {
-            return Line::from(Span::styled(
-                " no match — will be created as a new project ",
-                Style::default().fg(muted),
-            ));
-        }
-        Line::from(
-            m.iter()
-                .enumerate()
-                .take(6)
-                .flat_map(|(i, p)| {
-                    // `bg_selected` is the role the day and month tables already use
-                    // for "the row under the cursor", so the picker highlight reads as
-                    // the same kind of selection; bold lifts it off a subtle background.
-                    let style = if i == self.picker_idx && self.focus() == PROJECT {
-                        Style::default()
-                            .fg(text)
-                            .bg(bg_selected)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(muted)
-                    };
-                    [Span::styled(format!(" {p} "), style), Span::raw(" ")]
-                })
-                .collect::<Vec<Span>>(),
+        picker_line(
+            self.form.theme(),
+            &self.matches(),
+            self.picker_idx,
+            self.focus() == PROJECT,
         )
     }
 }

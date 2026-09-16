@@ -59,6 +59,13 @@ pub struct Model {
     pub stats_range: RangeKind,
     pub form: Option<FormState>,
     pub settings: Option<SettingsState>,
+    pub clock_picker: Option<ClockPickerState>,
+}
+
+/// State of the open clock-in overlay: whether submitting it switches the running
+/// session to another project, or opens the first one.
+pub struct ClockPickerState {
+    pub switching: bool,
 }
 
 /// State of the open entry-form overlay: the raw field values plus the result of
@@ -266,6 +273,52 @@ impl Model {
         self.focus_screen();
     }
 
+    /// The projects the clock-in overlay offers: the last used one first, so it is
+    /// what Enter takes, and — when switching — without the one already running.
+    fn picker_projects(&self, current: Option<&str>) -> Vec<String> {
+        let Some(m) = self.month.as_ref() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = m
+            .projects
+            .iter()
+            .map(|p| p.name.clone())
+            .filter(|n| Some(n.as_str()) != current)
+            .collect();
+        // An archived project can still be the last used one, so it is put in front
+        // rather than looked up in the list.
+        if let Some(last) = m
+            .last_used_project
+            .as_ref()
+            .filter(|l| Some(l.as_str()) != current)
+        {
+            names.retain(|n| n != last);
+            names.insert(0, last.clone());
+        }
+        names
+    }
+
+    /// Mount a fresh clock-in overlay over the month screen and give it focus.
+    fn open_clock_picker(&mut self, title: String, projects: Vec<String>, switching: bool) {
+        let _ = self.app.umount(&Id::ClockPicker);
+        let _ = self.app.mount(
+            Id::ClockPicker,
+            Box::new(
+                components::project_picker::ProjectPicker::new(title, projects)
+                    .with_theme(&self.theme),
+            ),
+            vec![],
+        );
+        self.clock_picker = Some(ClockPickerState { switching });
+        self.focus(Id::ClockPicker);
+    }
+
+    fn close_clock_picker(&mut self) {
+        self.clock_picker = None;
+        let _ = self.app.umount(&Id::ClockPicker);
+        self.focus_screen();
+    }
+
     /// Re-validate the open settings overlay and push its footer line back in.
     ///
     /// `show_error` is false right after opening, where the values come straight
@@ -409,17 +462,41 @@ impl Model {
                     }
                 }
             }
-            Msg::ClockIn => {
+            Msg::OpenClockPicker => {
                 // No weekday condition: weekend work counts towards the balance, and
                 // the CLI (`tk in`) has always allowed it.
-                if self.month.as_ref().is_some_and(|m| m.session.is_some()) {
-                    self.open_confirm(Confirm::ClockInReplace);
+                let session = self.month.as_ref().and_then(|m| m.session.clone());
+                let current = session.as_ref().and_then(|s| s.project.clone());
+                let title = match (session.is_some(), current.as_deref()) {
+                    (true, Some(p)) => format!("Switch project — currently {p}"),
+                    (true, None) => "Switch project".to_string(),
+                    _ => "Clock in — project".to_string(),
+                };
+                let projects = self.picker_projects(current.as_deref());
+                self.open_clock_picker(title, projects, session.is_some());
+            }
+            // The overlay only moved its highlight; every `update` repaints anyway.
+            Msg::ClockPickerChanged => {}
+            Msg::ClockPickerCancel => self.close_clock_picker(),
+            Msg::ClockPickerSubmit(name) => {
+                let Some(state) = self.clock_picker.take() else {
+                    return;
+                };
+                self.close_clock_picker();
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    self.set_status("Pick a project first", true);
                     return;
                 }
-                self.send(StoreCmd::ClockIn(
-                    self.today,
-                    self.now.with_second(0).unwrap(),
-                ));
+                if state.switching {
+                    self.send(StoreCmd::Switch { project: name });
+                } else {
+                    self.send(StoreCmd::ClockIn(
+                        self.today,
+                        self.now.with_second(0).unwrap(),
+                        name,
+                    ));
+                }
             }
             Msg::ClockOut => {
                 if !self.month.as_ref().is_some_and(|m| m.session.is_some()) {
@@ -461,14 +538,6 @@ impl Model {
                     }
                     Confirm::SetKind(d, k) => {
                         self.send(StoreCmd::SetKind(d, k));
-                    }
-                    Confirm::ClockInReplace => {
-                        // Replacing discards the running session rather than recording it.
-                        self.send(StoreCmd::ClearSession);
-                        self.send(StoreCmd::ClockIn(
-                            self.today,
-                            self.now.with_second(0).unwrap(),
-                        ));
                     }
                 }
             }
@@ -675,6 +744,7 @@ impl Model {
         let mut term = self.terminal.take().expect("terminal");
         let form_open = self.form.is_some();
         let settings_open = self.settings.is_some();
+        let picker_open = self.clock_picker.is_some();
         let _ = term.draw(|f| {
             self.draw(f);
             let area = f.area();
@@ -683,6 +753,9 @@ impl Model {
             }
             if settings_open {
                 self.app.view(&Id::Settings, f, area);
+            }
+            if picker_open {
+                self.app.view(&Id::ClockPicker, f, area);
             }
         });
         self.terminal = Some(term);
@@ -736,6 +809,7 @@ impl Model {
                 // Both ends as date-times: a session opened yesterday keeps counting
                 // instead of freezing at 00:00 when the clock passes midnight.
                 (
+                    s.project.clone().unwrap_or_default(),
                     s.start.format("%H:%M").to_string(),
                     crate::core::running_minutes(
                         NaiveDateTime::new(s.date, s.start),
@@ -810,7 +884,8 @@ impl Model {
                 ("Enter", "open day editor"),
                 ("s", "statistics"),
                 ("c", "settings"),
-                ("i / o", "clock in / out"),
+                ("i", "clock in / switch project"),
+                ("o", "clock out"),
                 ("v", "vacation"),
                 ("f", "flex day"),
                 ("x", "sick"),
@@ -834,7 +909,6 @@ impl Model {
         match c {
             Confirm::DeleteEntry(_) => "Delete this entry?".into(),
             Confirm::SetKind(d, k) => format!("Set {d} to {}?", k.display_name().to_lowercase()),
-            Confirm::ClockInReplace => "Already clocked in. Replace?".into(),
         }
     }
 }
@@ -900,6 +974,7 @@ pub mod testing {
             stats_range: RangeKind::ThisMonth,
             form: None,
             settings: None,
+            clock_picker: None,
         };
         (m, rx)
     }
@@ -917,6 +992,7 @@ pub mod testing {
             balance_total: Default::default(),
             session,
             projects: vec![],
+            last_used_project: None,
             vacation_used_this_year: 0,
         }
     }
@@ -984,27 +1060,99 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// A month with the given projects known and `last` used most recently.
+    fn month_with_projects(
+        today: NaiveDate,
+        names: &[&str],
+        last: Option<&str>,
+        session: Option<crate::store::Session>,
+    ) -> MonthData {
+        let mut m = month_data(today, vec![], session);
+        m.projects = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| crate::core::Project {
+                id: i as i64 + 1,
+                name: (*n).to_string(),
+                color_index: i as u8,
+                archived: false,
+            })
+            .collect();
+        m.last_used_project = last.map(str::to_string);
+        m
+    }
+
     #[test]
-    fn clock_in_out_flow() {
+    fn clock_in_picks_a_project_then_clocks_in() {
         let today = d(2026, 9, 15);
         let (mut m, rx) = model(today);
-        m.month = Some(month_data(today, vec![], None));
-        m.update(Msg::ClockIn);
-        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockIn(dt, _) if dt == today));
+        m.month = Some(month_with_projects(
+            today,
+            &["Beta", "Alpha"],
+            Some("Alpha"),
+            None,
+        ));
+        m.update(Msg::OpenClockPicker);
+        let st = m.clock_picker.as_ref().expect("the picker is open");
+        assert!(!st.switching, "nothing is running yet");
+        assert!(m.app.mounted(&Id::ClockPicker));
+        // The last used project is offered first, so Enter takes it.
+        assert_eq!(
+            m.picker_projects(None),
+            vec!["Alpha".to_string(), "Beta".into()]
+        );
+        m.update(Msg::ClockPickerSubmit("Alpha".into()));
+        assert!(m.clock_picker.is_none(), "the overlay closes on submit");
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::ClockIn(dt, _, p) if dt == today && p == "Alpha"
+        ));
+
+        // Nothing running: `o` only complains.
         m.update(Msg::ClockOut);
-        assert!(m.status.as_ref().unwrap().1); // not clocked in → error status
+        assert!(m.status.as_ref().unwrap().1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn clock_in_while_running_switches_the_project() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
         let sess = crate::store::Session {
             date: today,
             start: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
-            project: None,
+            project: Some("Alpha".into()),
         };
-        m.month = Some(month_data(today, vec![], Some(sess)));
-        m.update(Msg::ClockIn);
-        assert_eq!(m.confirm, Some(Confirm::ClockInReplace));
-        m.update(Msg::ConfirmNo);
-        assert!(m.confirm.is_none());
+        m.month = Some(month_with_projects(
+            today,
+            &["Alpha", "Beta"],
+            Some("Alpha"),
+            Some(sess),
+        ));
+        m.update(Msg::OpenClockPicker);
+        assert!(m.clock_picker.as_ref().expect("open").switching);
+        // The project already running is not on offer.
+        assert_eq!(m.picker_projects(Some("Alpha")), vec!["Beta".to_string()]);
+        m.update(Msg::ClockPickerSubmit("Beta".into()));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::Switch { project } if project == "Beta"
+        ));
+
+        // Esc closes the overlay without sending anything.
+        m.update(Msg::OpenClockPicker);
+        assert!(m.clock_picker.is_some());
+        m.update(Msg::ClockPickerCancel);
+        assert!(m.clock_picker.is_none());
+        assert!(!m.app.mounted(&Id::ClockPicker));
+        assert!(rx.try_recv().is_err());
+
+        // `o` books the running session on its own project.
         m.update(Msg::ClockOut);
-        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockOut { .. }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::ClockOut { project: None, .. }
+        ));
     }
 
     #[test]
@@ -1012,9 +1160,10 @@ mod tests {
         // Weekend work counts positively towards the balance, so nothing refuses it.
         let sat = d(2026, 9, 19);
         let (mut m, rx) = model(sat);
-        m.month = Some(month_data(sat, vec![], None));
-        m.update(Msg::ClockIn);
-        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockIn(dt, _) if dt == sat));
+        m.month = Some(month_with_projects(sat, &["Alpha"], Some("Alpha"), None));
+        m.update(Msg::OpenClockPicker);
+        m.update(Msg::ClockPickerSubmit("Alpha".into()));
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ClockIn(dt, _, _) if dt == sat));
         assert!(m.status.is_none(), "no complaint in the status bar");
     }
 
@@ -1040,13 +1189,17 @@ mod tests {
             Some(crate::store::Session {
                 date: d(2026, 9, 14),
                 start: NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
-                project: None,
+                project: Some("Alpha".into()),
             }),
         ));
         let info = m.title_info();
         assert_eq!(
             info.clock,
-            Some(("23:00".to_string(), crate::core::Minutes(120)))
+            Some((
+                "Alpha".to_string(),
+                "23:00".to_string(),
+                crate::core::Minutes(120)
+            ))
         );
     }
 

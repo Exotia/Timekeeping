@@ -205,7 +205,8 @@ any key closes it again.
 | `Enter` | Open the day editor |
 | `s` | Statistics |
 | `c` | Settings overlay: start date, initial balance, daily target, vacation days |
-| `i` / `o` | Clock in / clock out |
+| `i` | Clock in on a project — while clocked in, switch to another one |
+| `o` | Clock out |
 | `v` | Mark the day as vacation |
 | `f` | Mark the day as a flex day |
 | `x` | Mark the day as sick |
@@ -217,8 +218,16 @@ any key closes it again.
 
 Changing a day type asks for confirmation first, and is refused with a status
 message if the day already has entries, or if it is a weekend (weekends never
-carry a target, so they need no day type). Clocking in while a session is
-already open asks whether to replace it.
+carry a target, so they need no day type).
+
+`i` opens a one-field project picker: type to filter the known projects, `↑`
+and `↓` to move the highlight, `Enter` or `Tab` to take it, `Esc` to cancel. A
+name that matches nothing is created as a new project. With nothing running the
+picker is titled "Clock in" and offers the last used project first; while
+clocked in it is titled "Switch project — currently NAME", leaves that project
+out, and choosing one records the running session and clocks in on the new
+project in a single step. The title bar names the project it is counting for:
+`⏱ Alpha in since 08:12 (03:41)`.
 
 ### Day editor
 

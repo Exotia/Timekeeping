@@ -600,6 +600,7 @@ mod tests {
                     archived: false,
                 },
             ],
+            last_used_project: Some("Beta".into()),
             vacation_used_this_year: 1,
         };
         (data, rules, cal)

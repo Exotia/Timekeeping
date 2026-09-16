@@ -8,6 +8,7 @@ pub mod field_form;
 pub mod form;
 pub mod help;
 pub mod month;
+pub mod project_picker;
 pub mod settings;
 pub mod stats;
 

@@ -8,6 +8,7 @@ pub enum Id {
     Form,
     Stats,
     Settings,
+    ClockPicker,
     Confirm,
     Help,
 }

@@ -17,7 +17,6 @@ pub enum RangeKind {
 pub enum Confirm {
     DeleteEntry(i64),
     SetKind(NaiveDate, DayKind),
-    ClockInReplace,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -53,7 +52,13 @@ pub enum Msg {
     OpenDay,
     OpenStats,
     Back,
-    ClockIn,
+    /// `i`: pick the project to clock in on, or to switch to.
+    OpenClockPicker,
+    /// The highlight or the filter in that overlay moved: repaint it.
+    ClockPickerChanged,
+    /// The project chosen in that overlay.
+    ClockPickerSubmit(String),
+    ClockPickerCancel,
     ClockOut,
     SetKind(DayKind),
     AskConfirm(Confirm),
@@ -109,12 +114,15 @@ pub enum StoreCmd {
     },
     DeleteEntry(i64),
     SetKind(NaiveDate, DayKind),
-    ClockIn(NaiveDate, NaiveTime),
+    ClockIn(NaiveDate, NaiveTime, String),
     ClockOut {
         project: Option<String>,
         comment: String,
     },
-    ClearSession,
+    /// Book the running session and clock in on this project instead.
+    Switch {
+        project: String,
+    },
     Shutdown,
 }
 
@@ -129,6 +137,8 @@ pub struct MonthData {
     pub balance_total: Minutes,
     pub session: Option<Session>,
     pub projects: Vec<Project>,
+    /// The project of the most recent entry, offered first by the clock-in picker.
+    pub last_used_project: Option<String>,
     pub vacation_used_this_year: u32,
 }
 

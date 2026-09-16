@@ -13,8 +13,8 @@ use crate::tui::theme::Theme;
 pub struct TitleInfo {
     pub title: String,
     pub balance: Minutes,
-    /// (clock-in time "HH:MM", running minutes)
-    pub clock: Option<(String, Minutes)>,
+    /// (project, clock-in time "HH:MM", running minutes)
+    pub clock: Option<(String, String, Minutes)>,
     /// (used, allowance)
     pub vacation: Option<(u32, u32)>,
 }
@@ -24,10 +24,16 @@ pub fn draw_title_bar(f: &mut Frame, area: Rect, t: &Theme, info: &TitleInfo) {
         Span::styled("balance ", Style::default().fg(t.muted)),
         minutes_span(info.balance, t),
     ];
-    if let Some((since, running)) = &info.clock {
+    if let Some((project, since, running)) = &info.clock {
+        // A session opened before `tk` recorded the project simply has none to name.
+        let project = if project.is_empty() {
+            String::new()
+        } else {
+            format!("{project} ")
+        };
         right.push(Span::raw("   "));
         right.push(Span::styled(
-            format!("⏱ in since {since} ({})", running.hhmm()),
+            format!("⏱ {project}in since {since} ({})", running.hhmm()),
             Style::default().fg(t.warning),
         ));
     }
@@ -177,14 +183,14 @@ mod tests {
                 &TitleInfo {
                     title: "SEPTEMBER 2026".into(),
                     balance: Minutes(750),
-                    clock: Some(("08:12".into(), Minutes(221))),
+                    clock: Some(("Alpha".into(), "08:12".into(), Minutes(221))),
                     vacation: Some((21, 30)),
                 },
             );
         });
         assert!(contains(&rows, "SEPTEMBER 2026"));
         assert!(contains(&rows, "+12:30"));
-        assert!(contains(&rows, "in since 08:12"));
+        assert!(contains(&rows, "Alpha in since 08:12"));
         assert!(contains(&rows, "03:41"));
         assert!(contains(&rows, "21/30"));
     }

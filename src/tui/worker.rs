@@ -128,6 +128,7 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 balance_total: balance_through(ctx, today, today, session.is_some())?,
                 session,
                 projects: ctx.store.list_projects(false)?,
+                last_used_project: ctx.store.last_used_project()?,
                 vacation_used_this_year,
             })
         }
@@ -189,13 +190,19 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 kind.display_name().to_lowercase()
             ))
         }
-        StoreCmd::ClockIn(date, t) => {
-            let project = match ctx.store.last_used_project()? {
-                Some(p) => p,
-                None => anyhow::bail!("no project yet; add the entry from the day editor"),
-            };
+        StoreCmd::ClockIn(date, t, project) => {
             ctx.store.clock_in(date, t, &project)?;
-            StoreReply::Changed(format!("Clocked in at {}", t.format("%H:%M")))
+            StoreReply::Changed(format!("Clocked in on {project} at {}", t.format("%H:%M")))
+        }
+        StoreCmd::Switch { project } => {
+            let (e, s) = ctx.store.switch_project(now.time(), &project, "")?;
+            StoreReply::Changed(format!(
+                "Booked {}–{} {} · now on {}",
+                e.start.format("%H:%M"),
+                e.end.format("%H:%M"),
+                e.project,
+                s.project.as_deref().unwrap_or(&project)
+            ))
         }
         StoreCmd::ClockOut { project, comment } => {
             let e = ctx
@@ -208,10 +215,6 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 e.project,
                 e.duration()
             ))
-        }
-        StoreCmd::ClearSession => {
-            ctx.store.clear_session()?;
-            StoreReply::Changed(String::new())
         }
         StoreCmd::Shutdown => StoreReply::Changed(String::new()),
     })
