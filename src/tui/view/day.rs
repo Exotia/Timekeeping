@@ -8,7 +8,7 @@ use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Cell, Paragraph, Row, Table};
 
 use super::{block, chip, minutes_span};
-use crate::core::{DayKind, DayStats, TodayCtx, day_stats};
+use crate::core::{DayKind, DayStats, HoursFormat, TodayCtx, day_stats};
 use crate::tui::model::Model;
 use crate::tui::msg::DayData;
 use crate::tui::theme::Theme;
@@ -49,6 +49,7 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
         m.day_cursor,
         &KIND_CYCLE,
         kind_index(&data.day.kind),
+        m.hours,
     );
 }
 
@@ -66,6 +67,7 @@ pub fn draw_day(
     cursor: usize,
     kinds: &[&str],
     kind_idx: usize,
+    fmt: HoursFormat,
 ) {
     let [head, kind_a, table_a, foot] = Layout::vertical([
         Constraint::Length(2),
@@ -136,7 +138,7 @@ pub fn draw_day(
                 Cell::from(if i == cursor { "▶" } else { " " }),
                 Cell::from(e.start.format("%H:%M").to_string()),
                 Cell::from(e.end.format("%H:%M").to_string()),
-                Cell::from(e.duration().to_string()),
+                Cell::from(e.duration().fmt_signed(fmt)),
                 Cell::from(Span::styled(e.project.clone(), Style::default().fg(color))),
                 Cell::from(Span::styled(
                     e.comment.clone(),
@@ -184,15 +186,15 @@ pub fn draw_day(
 
     let mut foot_line = vec![
         Span::styled("gross ", Style::default().fg(t.muted)),
-        Span::raw(stats.gross.to_string()),
+        Span::raw(stats.gross.fmt_signed(fmt)),
         Span::styled("   break ", Style::default().fg(t.muted)),
-        Span::raw(format!("-{}", stats.deduction.hhmm())),
+        Span::raw(format!("-{}", stats.deduction.fmt_unsigned(fmt))),
         Span::styled("   net ", Style::default().fg(t.muted)),
-        minutes_span(stats.net, t),
+        minutes_span(stats.net, fmt, t),
         Span::styled("   target ", Style::default().fg(t.muted)),
-        Span::raw(format!("-{}", stats.target.hhmm())),
+        Span::raw(format!("-{}", stats.target.fmt_unsigned(fmt))),
         Span::styled("   day ", Style::default().fg(t.muted)),
-        minutes_span(stats.balance, t),
+        minutes_span(stats.balance, fmt, t),
     ];
     if data.day.kind != DayKind::Work {
         foot_line.insert(
@@ -214,7 +216,8 @@ pub fn draw_day(
 mod tests {
     use super::*;
     use crate::core::{
-        Day, DayKind, Entry, HolidayCalendar, Minutes, Rules, TodayCtx, day_stats, default_tiers,
+        Day, DayKind, Entry, HolidayCalendar, HoursFormat, Minutes, Rules, TodayCtx, day_stats,
+        default_tiers,
     };
     use crate::tui::msg::DayData;
     use crate::tui::theme::Theme;
@@ -276,6 +279,7 @@ mod tests {
                 0,
                 &KIND_CYCLE,
                 0,
+                HoursFormat::Hm,
             )
         })
     }
@@ -293,6 +297,58 @@ mod tests {
         assert!(contains(&rows, "gross +09:00"), "{}", rows.join("\n"));
         assert!(contains(&rows, "break -00:48"), "{}", rows.join("\n"));
         assert!(contains(&rows, "net +08:12"), "{}", rows.join("\n"));
+    }
+
+    /// The entry's gross cell and every figure in the footer follow the setting.
+    #[test]
+    fn renders_the_day_in_decimal_hours() {
+        let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        let day = Day {
+            date,
+            kind: DayKind::Work,
+            entries: vec![Entry {
+                id: 1,
+                date,
+                start: t(8, 0),
+                end: t(17, 0),
+                project: "Alpha".into(),
+                comment: String::new(),
+            }],
+        };
+        let stats = day_stats(
+            &day,
+            &rules(date),
+            &HolidayCalendar::default(),
+            &TodayCtx {
+                today: date.succ_opt().unwrap(),
+                clocked_in: false,
+            },
+        );
+        let data = DayData {
+            day,
+            projects: vec![],
+        };
+        let rows = render(100, 24, |f| {
+            draw_day(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &data,
+                &stats,
+                0,
+                &KIND_CYCLE,
+                0,
+                HoursFormat::Decimal,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "+9.00h"), "the entry's gross:\n{joined}");
+        assert!(contains(&rows, "gross +9.00h"), "{joined}");
+        assert!(contains(&rows, "break -0.80h"), "{joined}");
+        assert!(contains(&rows, "net +8.20h"), "{joined}");
+        assert!(contains(&rows, "target -7.80h"), "{joined}");
+        assert!(contains(&rows, "day +0.40h"), "{joined}");
+        assert!(!contains(&rows, "09:00"), "an h:mm leak:\n{joined}");
     }
 
     #[test]
@@ -343,6 +399,7 @@ mod tests {
                 1,
                 &KIND_CYCLE,
                 0,
+                HoursFormat::Hm,
             )
         });
         assert!(contains(&rows, "Monday, 14 September 2026"));

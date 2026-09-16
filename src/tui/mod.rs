@@ -35,6 +35,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
     let rules = ctx.config.rules();
     let cal = ctx.config.calendar();
     let vacation_allowance = ctx.config.vacation_days_per_year;
+    let hours = ctx.config.hours_format();
 
     let (reply_tx, reply_rx) = tokio::sync::mpsc::unbounded_channel::<StoreReply>();
     let (worker, worker_handle) = worker::spawn_worker(ctx, reply_tx);
@@ -126,6 +127,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         form: None,
         settings: None,
         clock_picker: None,
+        hours,
     };
     model.load_month();
 

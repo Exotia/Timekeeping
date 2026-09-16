@@ -67,6 +67,8 @@ pub enum Msg {
     ConfirmYes,
     ConfirmNo,
     ToggleHelp,
+    /// `u`: switch every duration on screen between `h:mm` and decimal hours.
+    ToggleHours,
     // day editor
     DaySelect(i32),
     DayAdd,

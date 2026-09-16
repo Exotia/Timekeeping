@@ -23,6 +23,7 @@ impl AppComponent<Msg, UserEvent> for StatsScreen {
             Key::Char('3') => Msg::StatsRange(RangeKind::LastMonth),
             Key::Char('4') => Msg::StatsRange(RangeKind::Quarter),
             Key::Char('5') => Msg::StatsRange(RangeKind::Year),
+            Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Esc | Key::Char('q') => Msg::Back,
             _ => return None,
@@ -58,5 +59,6 @@ mod tests {
         );
         assert_eq!(press(&mut c, '5'), Some(Msg::StatsRange(RangeKind::Year)));
         assert_eq!(press(&mut c, '6'), None);
+        assert_eq!(press(&mut c, 'u'), Some(Msg::ToggleHours));
     }
 }

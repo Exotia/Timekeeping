@@ -22,8 +22,8 @@ use super::view::chrome;
 use super::worker::Worker;
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    Entry, HolidayCalendar, Minutes, Rules, check_overlap, check_range, day_deduction, parse_date,
-    parse_time, recorded_gaps,
+    Entry, HolidayCalendar, HoursFormat, Minutes, Rules, check_overlap, check_range, day_deduction,
+    parse_date, parse_time, recorded_gaps,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +60,9 @@ pub struct Model {
     pub form: Option<FormState>,
     pub settings: Option<SettingsState>,
     pub clock_picker: Option<ClockPickerState>,
+    /// How every duration on screen is spelled; `u` flips it and writes it back
+    /// to `config.toml`.
+    pub hours: HoursFormat,
 }
 
 /// State of the open clock-in overlay: whether submitting it switches the running
@@ -116,11 +119,11 @@ pub fn validate_settings(d: &SettingsData, today: NaiveDate) -> Result<ConfigPat
 }
 
 /// The footer line of a settings overlay that validates: what saving would set.
-pub fn settings_footer(patch: &ConfigPatch) -> String {
+pub fn settings_footer(patch: &ConfigPatch, f: HoursFormat) -> String {
     format!(
         "balance {} · target {} · vacation {}",
-        Minutes(patch.initial_balance_minutes.unwrap_or(0)),
-        Minutes(patch.daily_target_minutes.unwrap_or(0)).hhmm(),
+        Minutes(patch.initial_balance_minutes.unwrap_or(0)).fmt_signed(f),
+        Minutes(patch.daily_target_minutes.unwrap_or(0)).fmt_unsigned(f),
         patch.vacation_days_per_year.unwrap_or(0)
     )
 }
@@ -261,6 +264,10 @@ impl Model {
     /// Mount a fresh settings overlay, prefilled from the rules this session is
     /// running with, and give it focus.
     fn open_settings(&mut self) {
+        // The two durations stay ±HH:MM whatever `u` says: these are the values in
+        // the text fields, and `validate_settings` reads them back with
+        // `Minutes::from_str`, which is the same format `--balance` and `--target`
+        // take on the command line. Only the footer below them follows the setting.
         let data = SettingsData {
             start: self.rules.start_date.to_string(),
             balance: self.rules.initial_balance.to_string(),
@@ -337,7 +344,7 @@ impl Model {
     fn refresh_settings(&mut self, show_error: bool) {
         let Some(s) = &self.settings else { return };
         let (error, preview) = match validate_settings(&s.data, self.today) {
-            Ok(patch) => (None, Some(settings_footer(&patch))),
+            Ok(patch) => (None, Some(settings_footer(&patch, self.hours))),
             Err(e) => (Some(e), None),
         };
         let error = if show_error { error } else { None };
@@ -385,9 +392,9 @@ impl Model {
             (None, Some((g, d, n))) => (
                 format!(
                     "gross +{} · break -{} · net +{}",
-                    g.hhmm(),
-                    d.hhmm(),
-                    n.hhmm()
+                    g.fmt_unsigned(self.hours),
+                    d.fmt_unsigned(self.hours),
+                    n.fmt_unsigned(self.hours)
                 ),
                 false,
             ),
@@ -550,6 +557,25 @@ impl Model {
                     Confirm::SetKind(d, k) => {
                         self.send(StoreCmd::SetKind(d, k));
                     }
+                }
+            }
+            Msg::ToggleHours => {
+                self.hours = self.hours.toggle();
+                let patch = ConfigPatch {
+                    hours_format: Some(self.hours),
+                    ..Default::default()
+                };
+                // The toggle is what the user pressed for; a home that cannot be
+                // written costs them the setting next time, not this screen.
+                match Config::write_updates(&self.home, &patch) {
+                    Ok(_) => self.set_status(
+                        match self.hours {
+                            HoursFormat::Hm => "Hours shown as h:mm",
+                            HoursFormat::Decimal => "Hours shown as decimal",
+                        },
+                        false,
+                    ),
+                    Err(e) => self.set_status(format!("hours format not saved: {e}"), true),
                 }
             }
             Msg::ToggleHelp => {
@@ -786,7 +812,7 @@ impl Model {
             Constraint::Length(1),
         ])
         .areas(area);
-        chrome::draw_title_bar(f, title, &self.theme, &self.title_info());
+        chrome::draw_title_bar(f, title, &self.theme, &self.title_info(), self.hours);
         match self.screen {
             Screen::Month => super::view::month::draw(self, f, body),
             Screen::Day => super::view::day::draw(self, f, body),
@@ -851,6 +877,7 @@ impl Model {
                 ("e", "edit"),
                 ("d", "delete"),
                 ("←→", "day type"),
+                ("u", "units"),
                 ("Esc", "back"),
             ],
             Screen::Stats => &[
@@ -859,6 +886,7 @@ impl Model {
                 ("3", "last month"),
                 ("4", "quarter"),
                 ("5", "year"),
+                ("u", "units"),
                 ("Esc", "back"),
             ],
         }
@@ -867,6 +895,9 @@ impl Model {
     /// The hints that fit into `width`. The row is a single line, and the month
     /// screen's full set is wider than the 80-column minimum; there it gives up the
     /// day-type keys, which are the group the `?` help spells out most fully.
+    ///
+    /// `u` is not in either month set: adding it to the reduced one takes the row
+    /// to 83 columns, past the 80 the UI promises to work at. `?` lists it.
     pub fn key_hints_for(&self, width: u16) -> &'static [(&'static str, &'static str)] {
         let full = self.key_hints();
         if chrome::hints_width(full) <= width {
@@ -903,6 +934,7 @@ impl Model {
                 ("x", "sick"),
                 ("p", "public holiday"),
                 ("w", "reset to work day"),
+                ("u", "toggle h:mm / decimal hours"),
                 ("q", "quit"),
             ],
             Screen::Day => &[
@@ -911,6 +943,7 @@ impl Model {
                 ("e", "edit entry"),
                 ("d", "delete entry"),
                 ("← →", "change day type"),
+                ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
             ],
             Screen::Stats => &[
@@ -919,6 +952,7 @@ impl Model {
                 ("3", "last month"),
                 ("4", "this quarter"),
                 ("5", "this year"),
+                ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
             ],
         }
@@ -995,6 +1029,7 @@ pub mod testing {
             form: None,
             settings: None,
             clock_picker: None,
+            hours: HoursFormat::Hm,
         };
         (m, rx)
     }
@@ -1029,6 +1064,44 @@ mod tests {
 
     fn d(y: i32, m: u32, dd: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, dd).unwrap()
+    }
+
+    #[test]
+    fn toggle_hours_flips_the_format_and_writes_it_to_the_config() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        let dir = tempfile::tempdir().unwrap();
+        m.home = dir.path().join("h");
+        assert_eq!(m.hours, HoursFormat::Hm);
+
+        m.update(Msg::ToggleHours);
+        assert_eq!(m.hours, HoursFormat::Decimal);
+        let written = std::fs::read_to_string(m.home.join("config.toml")).unwrap();
+        assert!(written.contains("hours_format = \"decimal\""), "{written}");
+        let (msg, is_error, _) = m.status.as_ref().unwrap();
+        assert_eq!(msg, "Hours shown as decimal");
+        assert!(!is_error);
+
+        m.update(Msg::ToggleHours);
+        assert_eq!(m.hours, HoursFormat::Hm);
+        let written = std::fs::read_to_string(m.home.join("config.toml")).unwrap();
+        assert!(written.contains("hours_format = \"hm\""), "{written}");
+        assert_eq!(m.status.as_ref().unwrap().0, "Hours shown as h:mm");
+    }
+
+    #[test]
+    fn toggle_hours_keeps_the_toggle_when_the_config_cannot_be_written() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        // A file stands where the home directory would have to be created.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        m.home = blocker.join("h");
+        m.update(Msg::ToggleHours);
+        // The session still gets what it asked for; only the file stayed behind.
+        assert_eq!(m.hours, HoursFormat::Decimal);
+        assert!(m.status.as_ref().unwrap().1, "{:?}", m.status);
     }
 
     #[test]
@@ -1631,8 +1704,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            settings_footer(&patch),
+            settings_footer(&patch, HoursFormat::Hm),
             "balance +12:30 · target 08:00 · vacation 28"
+        );
+        assert_eq!(
+            settings_footer(&patch, HoursFormat::Decimal),
+            "balance +12.50h · target 8.00h · vacation 28"
         );
     }
 

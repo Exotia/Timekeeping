@@ -11,7 +11,9 @@ use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Cell, Paragraph, Row as TRow, Table};
 
 use super::{bar, block, chip, minutes_span};
-use crate::core::{DayKind, DayStats, HolidayCalendar, Minutes, Rules, TodayCtx, day_stats};
+use crate::core::{
+    DayKind, DayStats, HolidayCalendar, HoursFormat, Minutes, Rules, TodayCtx, day_stats,
+};
 use crate::tui::model::Model;
 use crate::tui::msg::MonthData;
 use crate::tui::theme::Theme;
@@ -243,6 +245,8 @@ fn row_is_selected(v: &MonthView, r: &Row, selected: NaiveDate) -> bool {
 }
 
 const DAY_W: u16 = 9;
+/// Width of the GROSS and NET columns — wide enough for `+100.00h`.
+const DUR_W: u16 = 9;
 
 pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
     let Some(data) = &m.month else {
@@ -273,8 +277,9 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
         m.selected,
         m.today,
         area.width >= 90,
+        m.hours,
     );
-    draw_summary(f, summary_a, &m.theme, &v);
+    draw_summary(f, summary_a, &m.theme, &v, m.hours);
 }
 
 fn day_label(date: NaiveDate) -> String {
@@ -291,20 +296,22 @@ pub fn draw_table(
     selected: NaiveDate,
     today: NaiveDate,
     show_comment: bool,
+    fmt: HoursFormat,
 ) {
     let inner_w = area.width.saturating_sub(2);
+    // GROSS and NET are 9 wide: `+100.00h` is the longest a cell can get.
     let mut widths: Vec<Constraint> = vec![
         Constraint::Length(DAY_W),
         Constraint::Length(16),
         Constraint::Length(7),
         Constraint::Length(7),
-        Constraint::Length(8),
-        Constraint::Length(8),
+        Constraint::Length(DUR_W),
+        Constraint::Length(DUR_W),
     ];
     if show_comment {
         widths.push(Constraint::Min(10));
     }
-    let fixed: u16 = DAY_W + 16 + 7 + 7 + 8 + 8 + 6;
+    let fixed: u16 = DAY_W + 16 + 7 + 7 + DUR_W + DUR_W + 6;
     let comment_w = inner_w.saturating_sub(fixed) as usize;
     let span = (widths.len() as u16).saturating_sub(1).max(1);
 
@@ -375,11 +382,11 @@ pub fn draw_table(
                         Cell::from(e.start.format("%H:%M").to_string()),
                         Cell::from(e.end.format("%H:%M").to_string()),
                         Cell::from(Span::styled(
-                            e.duration().to_string(),
+                            e.duration().fmt_signed(fmt),
                             Style::default().fg(t.text),
                         )),
                         Cell::from(if *first {
-                            minutes_span(s.net, t)
+                            minutes_span(s.net, fmt, t)
                         } else {
                             Span::raw("")
                         }),
@@ -405,7 +412,7 @@ pub fn draw_table(
                     let label = s.kind.display_name().to_uppercase();
                     let extra = match &s.kind {
                         DayKind::Holiday => s.holiday_name.clone().unwrap_or_default(),
-                        DayKind::Flex => format!("{}", -s.target),
+                        DayKind::Flex => (-s.target).fmt_signed(fmt),
                         _ => String::new(),
                     };
                     banner(Line::from(vec![
@@ -421,9 +428,9 @@ pub fn draw_table(
                 } => {
                     let text = Line::from(vec![
                         Span::styled(format!("KW {week:02}  "), Style::default().fg(t.muted)),
-                        minutes_span(*week_balance, t),
+                        minutes_span(*week_balance, fmt, t),
                         Span::styled("  →  ", Style::default().fg(t.muted)),
-                        minutes_span(*running, t),
+                        minutes_span(*running, fmt, t),
                     ]);
                     vec![empty(), Cell::from(text).column_span(span)]
                 }
@@ -452,7 +459,7 @@ pub fn draw_table(
     f.render_widget(table, area);
 }
 
-pub fn draw_summary(f: &mut Frame, area: Rect, t: &Theme, v: &MonthView) {
+pub fn draw_summary(f: &mut Frame, area: Rect, t: &Theme, v: &MonthView, fmt: HoursFormat) {
     let total: i32 = v.project_totals.iter().map(|p| p.1.0).sum::<i32>().max(1);
     let bar_w = area
         .width
@@ -470,7 +477,7 @@ pub fn draw_summary(f: &mut Frame, area: Rect, t: &Theme, v: &MonthView) {
             l.extend(bar(frac, bar_w, t.project_color(*idx), t).spans);
             l.push(Span::raw(format!(
                 "  {:>8}  {:>5.1}%",
-                m.hhmm(),
+                m.fmt_unsigned(fmt),
                 frac * 100.0
             )));
             Line::from(l)
@@ -478,11 +485,11 @@ pub fn draw_summary(f: &mut Frame, area: Rect, t: &Theme, v: &MonthView) {
         .collect();
     lines.push(Line::from(vec![
         Span::styled("target ", Style::default().fg(t.muted)),
-        Span::raw(format!("-{}", v.target.hhmm())),
+        Span::raw(format!("-{}", v.target.fmt_unsigned(fmt))),
         Span::styled("   net ", Style::default().fg(t.muted)),
-        Span::raw(format!("+{}", v.net.hhmm())),
+        Span::raw(format!("+{}", v.net.fmt_unsigned(fmt))),
         Span::styled("   month ", Style::default().fg(t.muted)),
-        minutes_span(v.balance, t),
+        minutes_span(v.balance, fmt, t),
     ]));
     if !v.kind_counts.is_empty() {
         let counts: Vec<String> = v
@@ -725,6 +732,7 @@ mod tests {
                 d(2026, 9, 6),
                 d(2026, 9, 15),
                 true,
+                HoursFormat::Hm,
             )
         });
         assert!(contains(&rows, "Sun 06"));
@@ -769,6 +777,7 @@ mod tests {
                 d(2026, 9, 14),
                 d(2026, 9, 15),
                 true,
+                HoursFormat::Hm,
             )
         });
         assert!(contains(&rows, "Tue 01"));
@@ -783,6 +792,49 @@ mod tests {
         assert!(contains(&rows, "morning"));
         assert!(contains(&rows, "Extra holiday"));
         assert!(rows.iter().any(|r| r.contains('▶') && r.contains("Mon 14")));
+    }
+
+    /// Every duration in the table and the summary follows the display setting.
+    #[test]
+    fn renders_table_and_summary_in_decimal_hours() {
+        let (data, rules, cal) = fixture();
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        let t = Theme::dark();
+        let rows = render(100, 40, |f| {
+            draw_table(
+                f,
+                f.area(),
+                &t,
+                &v,
+                &data,
+                d(2026, 9, 14),
+                d(2026, 9, 15),
+                true,
+                HoursFormat::Decimal,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "+4.00h"), "the 4h entry's gross:\n{joined}");
+        assert!(
+            contains(&rows, "+3.70h"),
+            "its net after the tier:\n{joined}"
+        );
+        // The flex row spells out the target it gives back, and the week footers
+        // carry the week and running balances.
+        assert!(contains(&rows, "-7.80h"), "the flex row:\n{joined}");
+        assert!(contains(&rows, "-19.70h"), "the KW 36 footer:\n{joined}");
+        assert!(!contains(&rows, "+03:42"), "an h:mm leak:\n{joined}");
+
+        let rows = render(100, 8, |f| {
+            draw_summary(f, f.area(), &t, &v, HoursFormat::Decimal)
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "-70.20h"), "the month target:\n{joined}");
+        assert!(contains(&rows, "+9.70h"), "the month net:\n{joined}");
+        assert!(contains(&rows, "-60.50h"), "the month balance:\n{joined}");
+        // Project hours are unsigned, so they lose the sign but not the unit.
+        assert!(contains(&rows, "6.00h"), "Alpha's hours:\n{joined}");
+        assert!(!contains(&rows, "09:42"), "an h:mm leak:\n{joined}");
     }
 
     #[test]
@@ -800,6 +852,7 @@ mod tests {
                 d(2026, 9, 14),
                 d(2026, 9, 15),
                 false,
+                HoursFormat::Hm,
             )
         });
         assert!(!contains(&rows, "morning"));
@@ -811,7 +864,9 @@ mod tests {
         let (data, rules, cal) = fixture();
         let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
         let t = Theme::dark();
-        let rows = render(100, 8, |f| draw_summary(f, f.area(), &t, &v));
+        let rows = render(100, 8, |f| {
+            draw_summary(f, f.area(), &t, &v, HoursFormat::Hm)
+        });
         assert!(contains(&rows, "Alpha"));
         assert!(contains(&rows, "█"));
         assert!(contains(&rows, "60.0%"));

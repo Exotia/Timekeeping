@@ -9,7 +9,7 @@ use tuirealm::ratatui::widgets::Paragraph;
 
 use super::{bar, block, minutes_span};
 use crate::core::{
-    Day, DayKind, HolidayCalendar, Minutes, Rules, TodayCtx, day_stats, is_working_day,
+    Day, DayKind, HolidayCalendar, HoursFormat, Minutes, Rules, TodayCtx, day_stats, is_working_day,
 };
 use crate::tui::model::{Model, month_name};
 use crate::tui::msg::{RangeKind, StatsData};
@@ -301,12 +301,15 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
         m.vacation_allowance,
         m.stats_range,
     );
-    draw_stats(f, area, &m.theme, &v, m.stats_range);
+    draw_stats(f, area, &m.theme, &v, m.stats_range, m.hours);
 }
 
+/// Width of the chart's right-aligned value column — `+100.00h` plus a space.
+const VALUE_W: usize = 9;
+
 /// The bar area of a chart row: label (7) + a space + the bars + a right-aligned
-/// value (8) + a trailing space.
-const CHART_GUTTER: usize = 7 + 1 + 8 + 1;
+/// value (9) + a trailing space.
+const CHART_GUTTER: usize = 7 + 1 + VALUE_W + 1;
 
 /// Where the zero line sits inside a bar area of `width` columns, given the
 /// largest negative and positive balance on show. It is a column of its own, so
@@ -352,14 +355,14 @@ fn visible_buckets(v: &StatsView, rows: usize) -> &[Bucket] {
     &v.buckets[end - rows..end]
 }
 
-fn value_spans(m: Minutes, t: &Theme) -> Vec<Span<'static>> {
-    let s = minutes_span(m, t);
-    let pad = 8usize.saturating_sub(s.content.chars().count());
+fn value_spans(m: Minutes, fmt: HoursFormat, t: &Theme) -> Vec<Span<'static>> {
+    let s = minutes_span(m, fmt, t);
+    let pad = VALUE_W.saturating_sub(s.content.chars().count());
     vec![Span::raw(" ".repeat(pad)), s]
 }
 
 /// The overtime chart: one bar per bucket, growing left or right of a zero line.
-pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
+pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, fmt: HoursFormat) {
     let inner_w = area.width.saturating_sub(2) as usize;
     // Borders, the zero axis and the two footer lines.
     let rows = area.height.saturating_sub(5) as usize;
@@ -385,7 +388,7 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
             Span::styled("█".repeat(pos), Style::default().fg(t.positive)),
             Span::raw(" ".repeat(pos_span - pos)),
         ];
-        l.extend(value_spans(b.balance, t));
+        l.extend(value_spans(b.balance, fmt, t));
         lines.push(Line::from(l));
     }
     lines.push(Line::from(vec![
@@ -395,7 +398,7 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
 
     let mut footer = vec![
         Span::styled("total ", Style::default().fg(t.muted)),
-        minutes_span(v.balance_total, t),
+        minutes_span(v.balance_total, fmt, t),
     ];
     // Over what is on show, so a chart that had to cut itself never names a
     // period the reader cannot see.
@@ -408,7 +411,7 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
             format!(" · {label} {} ", b.label),
             Style::default().fg(t.muted),
         ));
-        footer.push(minutes_span(b.balance, t));
+        footer.push(minutes_span(b.balance, fmt, t));
     }
     lines.push(Line::from(footer));
     // Net, target and balance belong here and nowhere else: net is gross minus
@@ -416,11 +419,11 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
     // balance it moves — never beside the hours a project was worked.
     lines.push(Line::from(vec![
         Span::styled("net ", Style::default().fg(t.muted)),
-        Span::raw(v.net.to_string()),
+        Span::raw(v.net.fmt_signed(fmt)),
         Span::styled(" · target ", Style::default().fg(t.muted)),
-        Span::raw(format!("-{}", v.target.hhmm())),
+        Span::raw(format!("-{}", v.target.fmt_unsigned(fmt))),
         Span::styled(" · balance ", Style::default().fg(t.muted)),
-        minutes_span(v.net - v.target, t),
+        minutes_span(v.net - v.target, fmt, t),
     ]));
 
     let title = match v.granularity {
@@ -448,7 +451,14 @@ fn chart_height(v: &StatsView, area: Rect) -> u16 {
     ((v.buckets.len() + 5) as u16).min(available)
 }
 
-pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: RangeKind) {
+pub fn draw_stats(
+    f: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    v: &StatsView,
+    active: RangeKind,
+    fmt: HoursFormat,
+) {
     let chart_h = chart_height(v, area);
     let [sel, chart, proj, kinds] = Layout::vertical([
         Constraint::Length(3),
@@ -494,7 +504,7 @@ pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: R
     );
 
     if chart_h > 0 {
-        draw_chart(f, chart, t, v);
+        draw_chart(f, chart, t, v, fmt);
     }
 
     let total = v.total.0.max(1) as f64;
@@ -511,7 +521,7 @@ pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: R
             l.extend(bar(frac, bar_w, t.project_color(*idx), t).spans);
             l.push(Span::raw(format!(
                 "  {:>8}  {:>5.1}%",
-                m.hhmm(),
+                m.fmt_unsigned(fmt),
                 frac * 100.0
             )));
             Line::from(l)
@@ -526,7 +536,7 @@ pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: R
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("worked ", Style::default().fg(t.muted)),
-        Span::raw(v.total.hhmm()),
+        Span::raw(v.total.fmt_unsigned(fmt)),
     ]));
     f.render_widget(
         Paragraph::new(lines).block(block(t, Some("Projects"))),
@@ -565,7 +575,9 @@ pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Day, DayKind, Entry, HolidayCalendar, Minutes, Rules, default_tiers};
+    use crate::core::{
+        Day, DayKind, Entry, HolidayCalendar, HoursFormat, Minutes, Rules, default_tiers,
+    };
     use crate::tui::msg::{RangeKind, StatsData};
     use crate::tui::theme::Theme;
     use crate::tui::view::testing::{contains, render};
@@ -837,7 +849,14 @@ mod tests {
         // What was worked in the range is still what was worked in the range.
         assert_eq!(v.total, Minutes(2 * 540));
         let rows = render(100, 30, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Hm,
+            )
         });
         let joined = rows.join("\n");
         assert!(contains(&rows, "total -07:24"), "{joined}");
@@ -867,6 +886,35 @@ mod tests {
         assert_eq!(net_row, total_row + 1, "{joined}");
     }
 
+    /// The chart's bar values, its footer and the projects panel all follow the
+    /// display setting.
+    #[test]
+    fn renders_in_decimal_hours() {
+        let v = view(
+            RangeKind::ThisMonth,
+            vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
+        );
+        let rows = render(100, 30, |f| {
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Decimal,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "+0.40h"), "the +24 bar:\n{joined}");
+        assert!(
+            contains(&rows, "-7.80h"),
+            "the missing day's bar:\n{joined}"
+        );
+        assert!(contains(&rows, "total -7.40h"), "the footer:\n{joined}");
+        assert!(contains(&rows, "worked 9.00h"), "the projects:\n{joined}");
+        assert!(!contains(&rows, "00:24"), "an h:mm leak:\n{joined}");
+    }
+
     #[test]
     fn a_bar_area_of_one_column_still_draws() {
         // Both signs on show and no room to split: the zero line takes the column.
@@ -881,7 +929,14 @@ mod tests {
         );
         // Far below the minimum terminal, but a panic here would take the app down.
         let rows = render(20, 21, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Hm,
+            )
         });
         assert!(rows.iter().all(|r| r.chars().count() <= 20));
     }
@@ -891,7 +946,14 @@ mod tests {
         let v = view(RangeKind::Year, vec![]);
         for w in [80u16, 100] {
             let rows = render(w, 21, |f| {
-                draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::Year)
+                draw_stats(
+                    f,
+                    f.area(),
+                    &Theme::dark(),
+                    &v,
+                    RangeKind::Year,
+                    HoursFormat::Hm,
+                )
             });
             let joined = rows.join("\n");
             assert!(
@@ -910,7 +972,14 @@ mod tests {
             vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
         );
         let rows = render(100, 30, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Hm,
+            )
         });
         let joined = rows.join("\n");
         assert!(contains(&rows, "Balance per week"), "{joined}");
@@ -926,7 +995,10 @@ mod tests {
         let (bars, zero) = bars_and_zero(plus);
         assert!(bars.iter().all(|b| *b > zero), "{plus}");
         // The axis row carries nothing but the zero, right under the zero line.
-        let axis = rows
+        // Searched from the first bar down, so that a date elsewhere on the screen
+        // that happens to have a digit in this column cannot stand in for it.
+        let first_bar = rows.iter().position(|r| r.contains("KW 36")).unwrap();
+        let axis = rows[first_bar..]
             .iter()
             .find(|r| r.chars().nth(zero) == Some('0'))
             .unwrap_or_else(|| panic!("no axis row with a 0 at column {zero}:\n{joined}"));
@@ -943,7 +1015,14 @@ mod tests {
     fn a_negative_only_chart_grows_to_the_left() {
         let v = view(RangeKind::ThisMonth, vec![missing(d(2026, 9, 8))]);
         let rows = render(100, 30, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Hm,
+            )
         });
         let row = rows.iter().find(|r| r.contains("KW 37")).unwrap();
         let (bars, zero) = bars_and_zero(row);
@@ -965,7 +1044,14 @@ mod tests {
         assert_eq!(v.buckets.len(), 12);
         // The body of an 80×24 terminal: title bar, status bar and hint row taken off.
         let rows = render(80, 21, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::Year)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::Year,
+                HoursFormat::Hm,
+            )
         });
         let joined = rows.join("\n");
         assert!(
@@ -997,7 +1083,14 @@ mod tests {
         let mut v = view(RangeKind::ThisMonth, vec![]);
         v.buckets.clear();
         let rows = render(100, 30, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Hm,
+            )
         });
         assert!(!contains(&rows, "Balance per"), "{}", rows.join("\n"));
     }
@@ -1073,7 +1166,14 @@ mod tests {
         );
         assert_eq!((v.best, v.worst), (Some(0), Some(1)));
         let rows = render(100, 24, |f| {
-            draw_stats(f, f.area(), &Theme::dark(), &v, RangeKind::ThisMonth)
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::ThisMonth,
+                HoursFormat::Hm,
+            )
         });
         assert!(contains(&rows, "2026-09-01 → 2026-09-08"));
         assert!(contains(&rows, "Alpha"));

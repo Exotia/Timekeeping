@@ -25,9 +25,22 @@ impl AppComponent<Msg, UserEvent> for DayScreen {
             Key::Char('d') | Key::Delete => Msg::DayDelete,
             Key::Left | Key::Char('h') => Msg::DayKindPrev,
             Key::Right | Key::Char('l') => Msg::DayKindNext,
+            Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Esc | Key::Char('q') => Msg::Back,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u_toggles_the_hours_format() {
+        let mut c = DayScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('u'), KeyModifiers::NONE));
+        assert_eq!(c.on(&ev), Some(Msg::ToggleHours));
     }
 }

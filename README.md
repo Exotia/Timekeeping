@@ -207,6 +207,12 @@ the space the two share, so the table keeps most of the room.
 `Ctrl+C` quits from anywhere. `?` opens the key help for the current screen;
 any key closes it again.
 
+`u` switches every duration on screen between `h:mm` (`+07:48`) and decimal
+hours (`+7.80h`) and writes the choice to `hours_format` in `config.toml`, so
+the next run — and `tk status` in your prompt — opens the way you left it. It
+works on all three screens, whenever no overlay has the keyboard. The month
+screen's hint row has no room for it at 80 columns; `?` lists it there.
+
 ### Month view (the screen `tk` opens on)
 
 | Key | Action |
@@ -224,6 +230,7 @@ any key closes it again.
 | `x` | Mark the day as sick |
 | `p` | Mark the day as a public holiday |
 | `w` | Reset the day to a work day |
+| `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc` | Close an open overlay |
 | `q`, `Ctrl+C` | Quit |
@@ -250,6 +257,7 @@ project in a single step. The title bar names the project it is counting for:
 | `e`, `Enter` | Edit the selected entry |
 | `d`, `Delete` | Delete the selected entry (asks first) |
 | `←` / `h`, `→` / `l` | Cycle the day type: work → vacation → flex → holiday → sick → absence |
+| `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |
 
@@ -304,6 +312,7 @@ restart.
 | `3` | Last month |
 | `4` | This quarter |
 | `5` | This year |
+| `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |
 

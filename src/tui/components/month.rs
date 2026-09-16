@@ -35,9 +35,22 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('x') => Msg::SetKind(DayKind::Sick),
             Key::Char('p') => Msg::SetKind(DayKind::Holiday),
             Key::Char('w') => Msg::SetKind(DayKind::Work),
+            Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Esc => Msg::Back,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u_toggles_the_hours_format() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('u'), KeyModifiers::NONE));
+        assert_eq!(c.on(&ev), Some(Msg::ToggleHours));
     }
 }

@@ -7,7 +7,7 @@ use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::{block, minutes_span};
-use crate::core::Minutes;
+use crate::core::{HoursFormat, Minutes};
 use crate::tui::theme::Theme;
 
 pub struct TitleInfo {
@@ -19,10 +19,10 @@ pub struct TitleInfo {
     pub vacation: Option<(u32, u32)>,
 }
 
-pub fn draw_title_bar(f: &mut Frame, area: Rect, t: &Theme, info: &TitleInfo) {
+pub fn draw_title_bar(f: &mut Frame, area: Rect, t: &Theme, info: &TitleInfo, fmt: HoursFormat) {
     let mut right: Vec<Span> = vec![
         Span::styled("balance ", Style::default().fg(t.muted)),
-        minutes_span(info.balance, t),
+        minutes_span(info.balance, fmt, t),
     ];
     if let Some((project, since, running)) = &info.clock {
         // A session opened before `tk` recorded the project simply has none to name.
@@ -33,7 +33,10 @@ pub fn draw_title_bar(f: &mut Frame, area: Rect, t: &Theme, info: &TitleInfo) {
         };
         right.push(Span::raw("   "));
         right.push(Span::styled(
-            format!("⏱ {project}in since {since} ({})", running.hhmm()),
+            format!(
+                "⏱ {project}in since {since} ({})",
+                running.fmt_unsigned(fmt)
+            ),
             Style::default().fg(t.warning),
         ));
     }
@@ -168,7 +171,7 @@ pub fn draw_help(f: &mut Frame, area: Rect, t: &Theme, title: &str, keys: &[(&st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Minutes;
+    use crate::core::{HoursFormat, Minutes};
     use crate::tui::theme::Theme;
     use crate::tui::view::testing::{contains, render};
 
@@ -186,6 +189,7 @@ mod tests {
                     clock: Some(("Alpha".into(), "08:12".into(), Minutes(221))),
                     vacation: Some((21, 30)),
                 },
+                HoursFormat::Hm,
             );
         });
         assert!(contains(&rows, "SEPTEMBER 2026"));
@@ -193,6 +197,28 @@ mod tests {
         assert!(contains(&rows, "Alpha in since 08:12"));
         assert!(contains(&rows, "03:41"));
         assert!(contains(&rows, "21/30"));
+    }
+
+    #[test]
+    fn title_bar_follows_the_hours_format() {
+        let t = Theme::dark();
+        let rows = render(100, 1, |f| {
+            draw_title_bar(
+                f,
+                f.area(),
+                &t,
+                &TitleInfo {
+                    title: "SEPTEMBER 2026".into(),
+                    balance: Minutes(750),
+                    clock: Some(("Alpha".into(), "08:12".into(), Minutes(221))),
+                    vacation: None,
+                },
+                HoursFormat::Decimal,
+            );
+        });
+        assert!(contains(&rows, "+12.50h"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "(3.68h)"), "{}", rows.join("\n"));
+        assert!(!contains(&rows, "12:30"), "{}", rows.join("\n"));
     }
 
     #[test]
