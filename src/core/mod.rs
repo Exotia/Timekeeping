@@ -13,7 +13,8 @@ pub use balance::{
     provisional_net, provisional_net_for, running_balance, running_minutes,
 };
 pub use breaks::{
-    BreakTier, deduction, default_tiers, gaps_between, recorded_gaps, session_deduction, sessions,
+    BreakTier, deduction, default_tiers, entry_nets, gaps_between, recorded_gaps,
+    session_deduction, session_members, sessions,
 };
 pub use error::CoreError;
 pub use holidays::{HolidayCalendar, easter_sunday, saxony_holidays};

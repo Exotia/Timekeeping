@@ -125,6 +125,17 @@ A day with no entries never gets a deduction. While you are clocked in, the
 running session counts too, so `tk status` shows the same figures the day will
 have once you clock out.
 
+**Project time is net time.** A session's deduction belongs to the session, not
+to any one entry of it, so it is shared out over that session's entries in
+proportion to their gross length, rounded to whole minutes so the shares add up
+to the deduction exactly. An entry's net is its gross minus its share. With the
+defaults, 08:00–12:00 on Alpha plus 12:00–17:00 on Beta is one nine-hour session
+losing 48 minutes: 21 of them come off Alpha's four hours and 27 off Beta's
+five, so Alpha nets 3:39, Beta 4:33 and the day 8:12. Every project figure `tk`
+shows — the month summary, the statistics panel, the day editor and the export —
+is net time, so the hours on your projects add up to the hours on your balance
+and a pause is never booked on a project.
+
 **Theme overrides.** Keys inside `[theme_overrides]` are role names; values are
 `"#rrggbb"` or a named terminal color. Recognised roles: `positive`,
 `negative`, `warning`, `accent`, `muted`, `text`, `bg_selected`,

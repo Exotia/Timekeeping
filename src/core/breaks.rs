@@ -59,23 +59,50 @@ pub fn gaps_between(intervals: &[(i32, i32)]) -> Minutes {
     Minutes(gaps)
 }
 
-/// The seamless working sessions of a day.
+/// The seamless working sessions of a day, as the indices of the intervals each
+/// one is made of.
 ///
-/// Intervals are sorted by start and merged while the next one begins at or
+/// Intervals are taken in start order and merged while the next one begins at or
 /// before the end reached so far: a project switch at noon, an overlap and an
 /// interval nested in a longer one all stay inside the same session. Any gap of
-/// a minute or more starts the next session.
-pub fn sessions(intervals: &[(i32, i32)]) -> Vec<(i32, i32)> {
-    let mut iv = intervals.to_vec();
-    iv.sort_by_key(|(s, _)| *s);
-    let mut out: Vec<(i32, i32)> = Vec::with_capacity(iv.len());
-    for (s, e) in iv {
+/// a minute or more starts the next session. This is the one place the grouping
+/// is decided; [`sessions`] and [`entry_nets`] both read it, so the span a
+/// session is charged on and the entries that carry the charge can never drift
+/// apart.
+pub fn session_members(intervals: &[(i32, i32)]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..intervals.len()).collect();
+    order.sort_by_key(|&i| intervals[i].0);
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut end = 0;
+    for i in order {
+        let (s, e) = intervals[i];
         match out.last_mut() {
-            Some(last) if s <= last.1 => last.1 = last.1.max(e),
-            _ => out.push((s, e)),
+            Some(last) if s <= end => {
+                last.push(i);
+                end = end.max(e);
+            }
+            _ => {
+                out.push(vec![i]);
+                end = e;
+            }
         }
     }
     out
+}
+
+/// The seamless working sessions of a day as `(start, end)` spans.
+///
+/// The grouping is [`session_members`]; a session's span runs from the earliest
+/// start to the furthest end of the intervals in it.
+pub fn sessions(intervals: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    session_members(intervals)
+        .iter()
+        .map(|g| {
+            let s = g.iter().map(|&i| intervals[i].0).min().unwrap_or(0);
+            let e = g.iter().map(|&i| intervals[i].1).max().unwrap_or(0);
+            (s, e)
+        })
+        .collect()
 }
 
 /// The break deduction of a whole day: the tier deduction of every seamless
@@ -91,6 +118,53 @@ pub fn session_deduction(intervals: &[(i32, i32)], tiers: &[BreakTier]) -> Minut
         .iter()
         .map(|(s, e)| deduction(Minutes(e - s), tiers))
         .sum()
+}
+
+/// The net minutes of every entry of a day, in the order the entries come in.
+///
+/// A session's deduction (see [`session_deduction`]) is not a property of any one
+/// entry of it, so it is shared out over the entries in proportion to their gross
+/// length, rounded to whole minutes by the largest-remainder method: the shares
+/// add up to the session's deduction exactly, and the entries' nets to the day's
+/// net. An entry's net is its gross minus its share. A session can never take
+/// more off than was worked in it, so no share is negative or larger than the
+/// entry it belongs to.
+pub fn entry_nets(entries: &[Entry], tiers: &[BreakTier]) -> Vec<Minutes> {
+    let intervals: Vec<(i32, i32)> = entries.iter().map(Entry::interval).collect();
+    let mut nets: Vec<Minutes> = intervals.iter().map(|(s, e)| Minutes(e - s)).collect();
+    for group in session_members(&intervals) {
+        let span = {
+            let s = group.iter().map(|&i| intervals[i].0).min().unwrap_or(0);
+            let e = group.iter().map(|&i| intervals[i].1).max().unwrap_or(0);
+            e - s
+        };
+        // Overlapping entries can sum to more than the session spans, so the cap
+        // is what the entries hold, not the span the tier was read from.
+        let gross: i64 = group.iter().map(|&i| nets[i].0 as i64).sum();
+        let ded = (deduction(Minutes(span), tiers).0 as i64).min(gross).max(0);
+        if gross == 0 || ded == 0 {
+            continue;
+        }
+        // Whole-minute shares first, then the minutes rounding left over go to
+        // the largest remainders — ties to the earlier entry.
+        let mut shares: Vec<i64> = group
+            .iter()
+            .map(|&i| ded * nets[i].0 as i64 / gross)
+            .collect();
+        let mut rank: Vec<usize> = (0..group.len()).collect();
+        rank.sort_by_key(|&k| {
+            let rem = ded * nets[group[k]].0 as i64 % gross;
+            (std::cmp::Reverse(rem), k)
+        });
+        let left = ded - shares.iter().sum::<i64>();
+        for &k in rank.iter().take(left.max(0) as usize) {
+            shares[k] += 1;
+        }
+        for (k, &i) in group.iter().enumerate() {
+            nets[i] = Minutes(nets[i].0 - shares[k] as i32);
+        }
+    }
+    nets
 }
 
 #[cfg(test)]
@@ -212,6 +286,100 @@ mod tests {
             vec![(480, 1020), (1080, 1200)]
         );
         assert_eq!(sessions(&[]), Vec::<(i32, i32)>::new());
+    }
+
+    #[test]
+    fn session_members_group_the_indices_the_sessions_merge() {
+        // The grouping is the one `sessions` merges by, kept as indices into the
+        // caller's slice so a share can be handed back to the entry it came from.
+        assert_eq!(
+            session_members(&[(480, 720), (720, 1020)]),
+            vec![vec![0, 1]]
+        );
+        // Sorted by start, so the indices come out in clock order, not slice order.
+        assert_eq!(
+            session_members(&[(660, 1020), (480, 720)]),
+            vec![vec![1, 0]]
+        );
+        assert_eq!(
+            session_members(&[(480, 720), (721, 1020)]),
+            vec![vec![0], vec![1]]
+        );
+        assert_eq!(
+            session_members(&[(480, 1020), (540, 600), (1080, 1200)]),
+            vec![vec![0, 1], vec![2]]
+        );
+        assert_eq!(session_members(&[]), Vec::<Vec<usize>>::new());
+    }
+
+    #[test]
+    fn a_session_deduction_is_split_over_its_entries_by_gross() {
+        let t = default_tiers();
+        // 08–12 and 12–17 are one nine-hour session losing 48 minutes. The first
+        // entry's share is 48·240/540 = 21.33 → 21, the second's 26.67 → 27: the
+        // largest remainder takes the odd minute. Nets 3:39 and 4:33 add up to
+        // the day's 8:12.
+        let day = [e(1, (8, 0), (12, 0)), e(2, (12, 0), (17, 0))];
+        assert_eq!(entry_nets(&day, &t), vec![Minutes(219), Minutes(273)]);
+        assert_eq!(
+            entry_nets(&day, &t).iter().copied().sum::<Minutes>(),
+            Minutes(492)
+        );
+        // Stored out of order, the shares still line up with the entries.
+        let day = [e(2, (12, 0), (17, 0)), e(1, (8, 0), (12, 0))];
+        assert_eq!(entry_nets(&day, &t), vec![Minutes(273), Minutes(219)]);
+    }
+
+    #[test]
+    fn every_session_is_split_on_its_own() {
+        let t = default_tiers();
+        // One entry is one session, and it carries the whole deduction.
+        assert_eq!(entry_nets(&[e(1, (8, 0), (17, 0))], &t), vec![Minutes(492)]);
+        // A 45-minute lunch makes two sessions of 4:00 and 4:15; each loses 18
+        // minutes, and with one entry apiece there is nothing to share out.
+        let day = [e(1, (8, 0), (12, 0)), e(2, (12, 45), (17, 0))];
+        assert_eq!(entry_nets(&day, &t), vec![Minutes(222), Minutes(237)]);
+        // Three entries, a switch inside the afternoon session: only that
+        // session's 18 minutes are split, 9 and 9 on two equal halves.
+        let day = [
+            e(1, (8, 0), (11, 0)),
+            e(2, (12, 0), (14, 0)),
+            e(3, (14, 0), (16, 0)),
+        ];
+        assert_eq!(
+            entry_nets(&day, &t),
+            vec![Minutes(180), Minutes(111), Minutes(111)]
+        );
+    }
+
+    #[test]
+    fn no_deduction_leaves_the_gross_untouched() {
+        let day = [e(1, (8, 0), (11, 0)), e(2, (12, 0), (15, 0))];
+        // Two sessions of exactly three hours: neither is over the first tier.
+        assert_eq!(
+            entry_nets(&day, &default_tiers()),
+            vec![Minutes(180), Minutes(180)]
+        );
+        assert_eq!(entry_nets(&day, &[]), vec![Minutes(180), Minutes(180)]);
+        assert_eq!(entry_nets(&[], &default_tiers()), Vec::<Minutes>::new());
+    }
+
+    #[test]
+    fn a_share_is_never_negative_nor_larger_than_the_entry() {
+        // A hand-written tier table may deduct more than a session is long; the
+        // session's own gross caps what its entries can lose, so no net goes
+        // below zero.
+        let t = vec![BreakTier {
+            after: Minutes(60),
+            deduct: Minutes(1000),
+        }];
+        let day = [e(1, (8, 0), (10, 0)), e(2, (10, 0), (11, 0))];
+        let nets = entry_nets(&day, &t);
+        assert_eq!(nets, vec![Minutes::ZERO, Minutes::ZERO]);
+        for (net, entry) in nets.iter().zip(day.iter()) {
+            assert!(net.0 >= 0, "{net:?}");
+            assert!(*net <= entry.duration(), "{net:?}");
+        }
     }
 
     #[test]

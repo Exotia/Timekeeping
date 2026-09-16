@@ -158,6 +158,19 @@ and stands alone after a pause.
 
 **Net.** `gross − deduction`, never negative.
 
+**Net per entry.** The deduction of a session (see "Break deduction") is
+distributed over the entries of that session in proportion to their gross
+length, rounded to whole minutes with the largest-remainder method so the
+entries' nets sum exactly to the session's net. An entry's net is its gross
+minus its share. Project totals, the month summary, the statistics and the day
+editor use entry nets; pauses never count as project time. With the default
+tiers, 08–12 on Alpha plus 12–17 on Beta is one nine-hour session losing 48
+minutes: Alpha's share is 48·240/540 = 21.33 → 21, Beta's 26.67 → 27 — the
+largest remainder takes the odd minute — so Alpha nets 3:39, Beta 4:33 and the
+day 8:12. A session of one entry hands it the whole deduction; two sessions are
+split independently. A session never deducts more than was worked in it, so no
+entry's net is negative and the day's net is the sum of its entries' nets.
+
 **Day balance.** `net − target`. A Flex day therefore contributes `−target`.
 A partial flex (leaving early) is simply a short Work day.
 

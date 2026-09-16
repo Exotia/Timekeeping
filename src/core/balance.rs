@@ -1,8 +1,8 @@
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use super::{
-    BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, minutes_of, recorded_gaps,
-    session_deduction,
+    BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, entry_nets, minutes_of,
+    recorded_gaps, session_deduction,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +28,10 @@ pub struct DayStats {
     /// off between entries. The deduction is charged per session, not from this.
     pub gaps: Minutes,
     pub deduction: Minutes,
+    /// The net minutes of each entry of the day, aligned with `day.entries`:
+    /// every entry's gross minus its share of its session's deduction. `net` is
+    /// their sum, so project time read off these is net time.
+    pub entry_nets: Vec<Minutes>,
     pub net: Minutes,
     pub target: Minutes,
     pub balance: Minutes,
@@ -55,7 +59,11 @@ pub fn day_stats(day: &Day, rules: &Rules, cal: &HolidayCalendar, ctx: &TodayCtx
     let gross: Minutes = day.entries.iter().map(Entry::duration).sum();
     let gaps = recorded_gaps(&day.entries);
     let ded = session_deduction(&intervals_of(&day.entries), &rules.tiers);
-    let net = Minutes((gross - ded).0.max(0));
+    // The day's net is what the entries are left with once each has paid its
+    // share, so the two can never disagree — not even with a hand-written tier
+    // table that would deduct more than a session is long.
+    let nets = entry_nets(&day.entries, &rules.tiers);
+    let net: Minutes = nets.iter().copied().sum();
     let is_weekend = !is_working_day(day.date);
     let is_past = day.date < ctx.today;
     let is_today = day.date == ctx.today;
@@ -77,6 +85,7 @@ pub fn day_stats(day: &Day, rules: &Rules, cal: &HolidayCalendar, ctx: &TodayCtx
         gross,
         gaps,
         deduction: ded,
+        entry_nets: nets,
         net,
         target,
         balance: net - target,
@@ -524,6 +533,51 @@ mod tests {
         let s = mk(vec![entry(1, day, t(22, 0), t(5, 0))]);
         assert_eq!(s.gross, Minutes(420));
         assert_eq!(s.deduction, Minutes(48));
+    }
+
+    #[test]
+    fn the_entry_nets_add_up_to_the_days_net() {
+        let day = d(2026, 9, 14);
+        let mk = |entries: Vec<Entry>| {
+            day_stats(
+                &work(day, entries),
+                &rules(),
+                &cal(),
+                &ctx(d(2026, 9, 15), false),
+            )
+        };
+        // A seamless switch at noon: the nine-hour session loses 48 minutes,
+        // 21 of them off the four-hour morning and 27 off the five-hour
+        // afternoon — 3:39 and 4:33, and 8:12 together.
+        let s = mk(vec![
+            entry(1, day, t(8, 0), t(12, 0)),
+            entry(2, day, t(12, 0), t(17, 0)),
+        ]);
+        assert_eq!(s.entry_nets, vec![Minutes(219), Minutes(273)]);
+        assert_eq!(s.net, Minutes(492));
+        // Every shape of day: a real pause, three sessions, one entry, one over
+        // midnight. Whatever the sessions are, the shares add up to the net and
+        // there is exactly one per entry.
+        let days = [
+            vec![
+                entry(1, day, t(8, 0), t(12, 0)),
+                entry(2, day, t(12, 45), t(17, 0)),
+            ],
+            vec![
+                entry(1, day, t(8, 0), t(10, 0)),
+                entry(2, day, t(10, 30), t(12, 0)),
+                entry(3, day, t(13, 0), t(17, 0)),
+            ],
+            vec![entry(1, day, t(8, 0), t(17, 0))],
+            vec![entry(1, day, t(22, 0), t(5, 0))],
+            vec![],
+        ];
+        for entries in days {
+            let n = entries.len();
+            let s = mk(entries);
+            assert_eq!(s.entry_nets.len(), n);
+            assert_eq!(s.entry_nets.iter().copied().sum::<Minutes>(), s.net);
+        }
     }
 
     #[test]
