@@ -15,6 +15,6 @@ pub use balance::{
 pub use breaks::{BreakTier, day_deduction, deduction, default_tiers, gaps_between, recorded_gaps};
 pub use error::CoreError;
 pub use holidays::{HolidayCalendar, easter_sunday, saxony_holidays};
-pub use minutes::Minutes;
+pub use minutes::{HoursFormat, Minutes};
 pub use time_parse::{check_range, clock_out_end, parse_date, parse_time, parse_time_range};
 pub use types::{Day, DayKind, Entry, Project, minutes_of};

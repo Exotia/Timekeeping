@@ -313,6 +313,65 @@ fn config_shows_and_sets_values() {
         .stdout(predicate::str::contains("daily_target     08:00"));
 }
 
+/// `hours_format` decides how every printed duration is spelled — except the
+/// export, which stays `±HH:MM` so the files keep their shape.
+#[test]
+fn config_hours_switches_the_printed_durations() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // The default is h:mm, and the table shows it as a fifth row.
+    tk(home)
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hours_format     hm"));
+    tk(home)
+        .args(["config", "--hours", "decimal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hours_format     decimal"))
+        .stdout(predicate::str::contains("daily_target     7.80h"))
+        .stdout(predicate::str::contains("initial_balance  +0.00h"));
+    tk(home)
+        .args(["add", "2026-09-14", "0900-1530", "-p", "Alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gross +6.50h"));
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("today +0.00h"));
+    // Exported hours are data, not display: they stay ±HH:MM.
+    tk(home)
+        .args(["export", "--format", "csv"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("+06:30"));
+    // Back to h:mm.
+    tk(home)
+        .args(["config", "--hours", "hm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hours_format     hm"));
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("today +00:00"));
+    // An unknown spelling is refused and the file keeps its value.
+    tk(home)
+        .args(["config", "--hours", "industrial"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("decimal"));
+    tk(home)
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hours_format     hm"));
+}
+
 #[test]
 fn config_start_today_moves_the_balance() {
     let dir = tempfile::tempdir().unwrap();

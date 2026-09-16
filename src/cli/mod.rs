@@ -73,7 +73,8 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<ProjectAction>,
     },
-    /// Show or change core settings (start date, initial balance, daily target, vacation days)
+    /// Show or change core settings (start date, initial balance, daily target,
+    /// vacation days, hours format)
     Config {
         /// New start date for the balance (YYYY-MM-DD, today, yesterday, or an offset)
         // A negative day offset (`--start -1`) is a value, not another flag.
@@ -89,6 +90,9 @@ pub enum Command {
         /// New yearly vacation allowance in days
         #[arg(long, value_name = "DAYS")]
         vacation: Option<u32>,
+        /// How durations are printed: "hm" (07:48) or "decimal" (7.80h)
+        #[arg(long, value_name = "hm|decimal")]
+        hours: Option<String>,
     },
     /// Copy the database into backups/
     Backup,

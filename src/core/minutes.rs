@@ -5,6 +5,41 @@ use std::str::FromStr;
 
 use super::error::CoreError;
 
+/// How a duration is written on screen: `07:48` or `7.80h`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HoursFormat {
+    /// `+07:48` — hours and minutes.
+    #[default]
+    Hm,
+    /// `+7.80h` — hours with two decimals.
+    Decimal,
+}
+
+impl HoursFormat {
+    /// The spelling `config.toml` uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HoursFormat::Hm => "hm",
+            HoursFormat::Decimal => "decimal",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<HoursFormat> {
+        match s {
+            "hm" => Some(HoursFormat::Hm),
+            "decimal" => Some(HoursFormat::Decimal),
+            _ => None,
+        }
+    }
+
+    pub fn toggle(self) -> HoursFormat {
+        match self {
+            HoursFormat::Hm => HoursFormat::Decimal,
+            HoursFormat::Decimal => HoursFormat::Hm,
+        }
+    }
+}
+
 /// Signed duration in whole minutes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Minutes(pub i32);
@@ -28,6 +63,27 @@ impl Minutes {
     pub fn hhmm(self) -> String {
         let v = self.0.abs();
         format!("{:02}:{:02}", v / 60, v % 60)
+    }
+
+    /// The signed form the display setting asks for: `+07:48` or `+7.80h`.
+    pub fn fmt_signed(self, f: HoursFormat) -> String {
+        match f {
+            HoursFormat::Hm => self.to_string(),
+            HoursFormat::Decimal => {
+                let sign = if self.0 < 0 { '-' } else { '+' };
+                format!("{sign}{}", self.fmt_unsigned(f))
+            }
+        }
+    }
+
+    /// The unsigned form the display setting asks for: `07:48` or `7.80h`.
+    ///
+    /// Used where the sign is already in the sentence around it ("break -00:48").
+    pub fn fmt_unsigned(self, f: HoursFormat) -> String {
+        match f {
+            HoursFormat::Hm => self.hhmm(),
+            HoursFormat::Decimal => format!("{:.2}h", self.0.abs() as f64 / 60.0),
+        }
     }
 }
 
@@ -123,5 +179,37 @@ mod tests {
         assert_eq!(total, Minutes(3));
         assert!(Minutes(-1).is_negative());
         assert_eq!(Minutes(-1).abs(), Minutes(1));
+    }
+
+    #[test]
+    fn formats_in_either_hours_format() {
+        use HoursFormat::{Decimal, Hm};
+        assert_eq!(Minutes(468).fmt_signed(Hm), "+07:48");
+        assert_eq!(Minutes(468).fmt_signed(Decimal), "+7.80h");
+        assert_eq!(Minutes(468).fmt_unsigned(Hm), "07:48");
+        assert_eq!(Minutes(468).fmt_unsigned(Decimal), "7.80h");
+        assert_eq!(Minutes(-30).fmt_signed(Decimal), "-0.50h");
+        assert_eq!(Minutes(-30).fmt_unsigned(Decimal), "0.50h");
+        assert_eq!(Minutes::ZERO.fmt_signed(Decimal), "+0.00h");
+        assert_eq!(Minutes(6000).fmt_signed(Decimal), "+100.00h");
+        assert_eq!(Minutes(6000).fmt_signed(Hm), "+100:00");
+        // `Display` and `hhmm` stay h:mm whatever the setting says.
+        assert_eq!(Minutes(468).to_string(), "+07:48");
+        assert_eq!(Minutes(468).hhmm(), "07:48");
+    }
+
+    #[test]
+    fn hours_format_parses_and_toggles() {
+        use HoursFormat::{Decimal, Hm};
+        assert_eq!(HoursFormat::default(), Hm);
+        assert_eq!(Hm.as_str(), "hm");
+        assert_eq!(Decimal.as_str(), "decimal");
+        for f in [Hm, Decimal] {
+            assert_eq!(HoursFormat::parse(f.as_str()), Some(f));
+        }
+        assert_eq!(HoursFormat::parse("HM"), None);
+        assert_eq!(HoursFormat::parse(""), None);
+        assert_eq!(Hm.toggle(), Decimal);
+        assert_eq!(Decimal.toggle(), Hm);
     }
 }

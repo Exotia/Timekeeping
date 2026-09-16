@@ -110,6 +110,8 @@ pub fn validate_settings(d: &SettingsData, today: NaiveDate) -> Result<ConfigPat
         initial_balance_minutes: Some(balance.0),
         daily_target_minutes: Some(target.0),
         vacation_days_per_year: Some(vacation),
+        // The overlay has no field for it; `u` owns that key.
+        hours_format: None,
     })
 }
 
@@ -1598,6 +1600,7 @@ mod tests {
                 initial_balance_minutes: Some(750),
                 daily_target_minutes: Some(480),
                 vacation_days_per_year: Some(28),
+                hours_format: None,
             }
         );
         let bad = |f: &dyn Fn(&mut SettingsData), needle: &str| {

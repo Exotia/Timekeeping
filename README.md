@@ -65,6 +65,7 @@ break_gap_minutes = 30             # a recorded pause of at least this long canc
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
+hours_format = "hm"                # "hm" (07:48) | "decimal" (7.80h)
 extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
@@ -88,6 +89,7 @@ deduct_minutes = 48
 | `vacation_days_per_year` | `30` | Allowance shown in the title bar and on the statistics screen; remaining = allowance − vacation working days taken in the calendar year. No carry-over. |
 | `week_starts_on` | `"monday"` | `"monday"` or `"sunday"`. Accepted and validated, but it has no effect yet: week rows are grouped by ISO week number, which always begins on Monday. |
 | `theme` | `"dark"` | `"dark"`, `"light"` or `"purple"` (deep purple ground, vivid green/red balances). |
+| `hours_format` | `"hm"` | How durations are written: `"hm"` is `+07:48`, `"decimal"` is `+7.80h`. Applies to the TUI and to everything `tk` prints except `tk export`, whose `gross` column stays `±HH:MM`. `u` in the TUI flips it and writes the new value back here. |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as public holidays on top of the built-in Saxon ones (company holidays such as 24 and 31 December). |
 | `[[break_tiers]]` | 180→18, 360→48 | Statutory break table. `after_minutes` must be non-negative and strictly ascending across tiers; `deduct_minutes` must be non-negative. |
 | `[theme_overrides]` | empty | Per-role color overrides. |
@@ -99,12 +101,14 @@ with `tk config` or with `c` in the TUI's month view. Both rewrite
 `config.toml` in place, keeping your comments, key order and break tiers, and
 both refuse a value the config file itself would reject: `tk config` names the
 offending field and exits with status 1, the overlay puts the reason in its
-footer and stays open.
+footer and stays open. `hours_format` is the fifth: `tk config --hours` sets
+it, and `u` in the TUI toggles it on the spot.
 
 ```bash
 tk config                                   # show the current values
 tk config --target 8:00 --vacation 28       # change two of them
 tk config --start 2026-01-01 --balance -2:30
+tk config --hours decimal                   # print 7.80h instead of 07:48
 ```
 
 **How breaks apply.** A pause you recorded yourself counts. If the gaps
@@ -165,7 +169,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk projects archive NAME` | | Hide a project from the picker without deleting its entries. |
 | `tk projects unarchive NAME` | | Undo an archive. |
 | `tk projects rename OLD NEW` | | Rename a project. |
-| `tk config` | `--start DATE`<br>`--balance ±HH:MM`<br>`--target HH:MM`<br>`--vacation DAYS` | Without flags, print the four core settings. With any flag, change them in `config.toml` — comments and break tiers are kept — and print the new table. A running TUI keeps the old values until it is restarted. |
+| `tk config` | `--start DATE`<br>`--balance ±HH:MM`<br>`--target HH:MM`<br>`--vacation DAYS`<br>`--hours hm\|decimal` | Without flags, print the five core settings. With any flag, change them in `config.toml` — comments and break tiers are kept — and print the new table. A running TUI keeps the old values until it is restarted, except `hours_format`, which `u` changes live. |
 | `tk backup` | | Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db`. |
 | `tk export` | `--format csv\|json` (default `csv`)<br>`--from DATE`<br>`--to DATE`<br>`-o, --output PATH` | Export entries. Defaults to `start_date` … today, printed to stdout unless `--output` is given. |
 
