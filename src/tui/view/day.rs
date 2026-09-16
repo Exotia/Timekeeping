@@ -221,10 +221,83 @@ mod tests {
     use crate::tui::view::testing::{contains, render};
     use chrono::{NaiveDate, NaiveTime};
 
+    fn t(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    fn rules(date: NaiveDate) -> Rules {
+        Rules {
+            daily_target: Minutes(468),
+            tiers: default_tiers(),
+            break_gap: Minutes(30),
+            start_date: date,
+            initial_balance: Minutes::ZERO,
+        }
+    }
+
+    /// Render a work day of `spans` and return its rows.
+    fn day_rows(date: NaiveDate, spans: &[(NaiveTime, NaiveTime)]) -> Vec<String> {
+        let day = Day {
+            date,
+            kind: DayKind::Work,
+            entries: spans
+                .iter()
+                .enumerate()
+                .map(|(i, (s, e))| Entry {
+                    id: i as i64 + 1,
+                    date,
+                    start: *s,
+                    end: *e,
+                    project: "Alpha".into(),
+                    comment: String::new(),
+                })
+                .collect(),
+        };
+        let stats = day_stats(
+            &day,
+            &rules(date),
+            &HolidayCalendar::default(),
+            &TodayCtx {
+                today: date.succ_opt().unwrap(),
+                clocked_in: false,
+            },
+        );
+        let data = DayData {
+            day,
+            projects: vec![],
+        };
+        render(100, 24, |f| {
+            draw_day(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &data,
+                &stats,
+                0,
+                &KIND_CYCLE,
+                0,
+            )
+        })
+    }
+
+    #[test]
+    fn the_footer_break_follows_the_recorded_pause() {
+        let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        // 12:00 → 12:45 is a real break: the day keeps all 8:15 of its gross.
+        let rows = day_rows(date, &[(t(8, 0), t(12, 0)), (t(12, 45), t(17, 0))]);
+        assert!(contains(&rows, "gross +08:15"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "break -00:00"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "net +08:15"), "{}", rows.join("\n"));
+        // Straight on at noon — a project switch, not a break — and the tier applies.
+        let rows = day_rows(date, &[(t(8, 0), t(12, 0)), (t(12, 0), t(17, 0))]);
+        assert!(contains(&rows, "gross +09:00"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "break -00:48"), "{}", rows.join("\n"));
+        assert!(contains(&rows, "net +08:12"), "{}", rows.join("\n"));
+    }
+
     #[test]
     fn renders_entries_kind_selector_and_footer() {
         let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
-        let t = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap();
         let day = Day {
             date,
             kind: DayKind::Work,
@@ -247,16 +320,9 @@ mod tests {
                 },
             ],
         };
-        let rules = Rules {
-            daily_target: Minutes(468),
-            tiers: default_tiers(),
-            break_gap: Minutes(30),
-            start_date: date,
-            initial_balance: Minutes::ZERO,
-        };
         let stats = day_stats(
             &day,
-            &rules,
+            &rules(date),
             &HolidayCalendar::default(),
             &TodayCtx {
                 today: date.succ_opt().unwrap(),

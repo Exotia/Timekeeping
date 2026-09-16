@@ -22,8 +22,8 @@ use super::view::chrome;
 use super::worker::Worker;
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    Entry, HolidayCalendar, Minutes, Rules, check_overlap, check_range, deduction, parse_date,
-    parse_time,
+    Entry, HolidayCalendar, Minutes, Rules, check_overlap, check_range, day_deduction, parse_date,
+    parse_time, recorded_gaps,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,13 +155,22 @@ pub fn validate_form(
         comment: String::new(),
     };
     let gross_this = this.duration();
-    let gross_day: Minutes = existing
+    // The day as saving this form would leave it: every other entry plus this
+    // one. The entry under edit is taken out, so its old slot neither counts
+    // twice nor pretends to be the neighbour of its own new one.
+    let day: Vec<Entry> = existing
         .iter()
         .filter(|e| Some(e.id) != d.id)
-        .map(Entry::duration)
-        .sum::<Minutes>()
-        + gross_this;
-    let ded = deduction(gross_day, &rules.tiers);
+        .cloned()
+        .chain(std::iter::once(this))
+        .collect();
+    let gross_day: Minutes = day.iter().map(Entry::duration).sum();
+    let ded = day_deduction(
+        gross_day,
+        recorded_gaps(&day),
+        &rules.tiers,
+        rules.break_gap,
+    );
     Ok((
         start,
         end,
@@ -1294,8 +1303,10 @@ mod tests {
         let ok = validate_form(&fd("1300", "16:00", "Alpha"), &existing, &m.rules).unwrap();
         assert_eq!(ok.0, t(13, 0));
         assert_eq!(ok.2, crate::core::Minutes(180)); // gross of this entry
-        assert_eq!(ok.3, crate::core::Minutes(48)); // day deduction with 7h total
-        assert_eq!(ok.4, crate::core::Minutes(420 - 48)); // day net
+        // The hour between 12:00 and the new entry is a recorded break, so the
+        // preview promises no deduction — the same figure the day will show.
+        assert_eq!(ok.3, crate::core::Minutes::ZERO); // day deduction
+        assert_eq!(ok.4, crate::core::Minutes(420)); // day net
         assert!(
             validate_form(&fd("abc", "1600", "A"), &existing, &m.rules)
                 .unwrap_err()
@@ -1329,6 +1340,47 @@ mod tests {
         let mut edit = fd("0900", "1200", "A");
         edit.id = Some(1);
         assert!(validate_form(&edit, &existing, &m.rules).is_ok());
+    }
+
+    #[test]
+    fn validate_form_previews_the_gap_aware_deduction() {
+        let today = d(2026, 9, 15);
+        let (m, _rx) = model(today);
+        let t = |h, mi| chrono::NaiveTime::from_hms_opt(h, mi, 0).unwrap();
+        let e = |id, s, en| crate::core::Entry {
+            id,
+            date: today,
+            start: s,
+            end: en,
+            project: "A".into(),
+            comment: String::new(),
+        };
+        let fd = |id, s: &str, en: &str| FormData {
+            id,
+            start: s.into(),
+            end: en.into(),
+            project: "Alpha".into(),
+            comment: String::new(),
+        };
+        let existing = vec![e(1, t(8, 0), t(12, 0))];
+        // Straight on from noon: eight gross hours and no pause at all.
+        let ok = validate_form(&fd(None, "1200", "1600"), &existing, &m.rules).unwrap();
+        assert_eq!(ok.3, crate::core::Minutes(48));
+        assert_eq!(ok.4, crate::core::Minutes(480 - 48));
+        // Twenty minutes off is not a break yet.
+        let ok = validate_form(&fd(None, "1220", "1600"), &existing, &m.rules).unwrap();
+        assert_eq!(ok.3, crate::core::Minutes(48));
+        // Editing an entry previews the day as it would be, not as it is: the
+        // old slot of the entry under edit must not count as its own neighbour.
+        let existing = vec![e(1, t(8, 0), t(12, 0)), e(2, t(12, 45), t(17, 0))];
+        // Pulling the afternoon entry back to 12:00 closes the only pause there is.
+        let ok = validate_form(&fd(Some(2), "1200", "1700"), &existing, &m.rules).unwrap();
+        assert_eq!(ok.3, crate::core::Minutes(48));
+        assert_eq!(ok.4, crate::core::Minutes(540 - 48));
+        // Leaving it where it is keeps the break.
+        let ok = validate_form(&fd(Some(2), "1245", "1700"), &existing, &m.rules).unwrap();
+        assert_eq!(ok.3, crate::core::Minutes::ZERO);
+        assert_eq!(ok.4, crate::core::Minutes(495));
     }
 
     #[test]

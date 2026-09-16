@@ -75,6 +75,46 @@ fn add_day_and_status_and_export() {
         .stdout(predicate::str::contains("\"project\":\"Alpha\""));
 }
 
+/// A pause the user recorded is a break the tier table must not charge twice.
+#[test]
+fn a_recorded_pause_cancels_the_break_deduction() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    tk(home)
+        .args(["add", "today", "0800-1200", "-p", "Alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("day net +03:42")); // 4h gross − 18
+    // Back at 12:45: the 45-minute break pays for itself, so all 8:15 stay.
+    tk(home)
+        .args(["add", "today", "1245-1700", "-p", "Alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("day net +08:15"));
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("today +08:15"));
+    // The same hours worked straight through lose the full 48 minutes.
+    let dir2 = tempfile::tempdir().unwrap();
+    let home2 = dir2.path();
+    tk(home2)
+        .args(["add", "today", "0800-1200", "-p", "Alpha"])
+        .assert()
+        .success();
+    tk(home2)
+        .args(["add", "today", "1200-1700", "-p", "Alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("day net +08:12")); // 9h gross − 48
+    tk(home2)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("today +08:12"));
+}
+
 #[test]
 fn clock_in_and_out() {
     let dir = tempfile::tempdir().unwrap();
