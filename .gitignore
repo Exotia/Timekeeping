@@ -1,6 +1,6 @@
 /.superpowers/
 /target
-/result
+/result*
 *.db
 *.db-wal
 *.db-shm
