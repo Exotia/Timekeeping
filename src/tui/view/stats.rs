@@ -41,6 +41,8 @@ pub struct StatsView {
     /// The sum of the bucket balances — the chart's own total, which starts at
     /// `rules.start_date` and so can differ from `net - target` over the range.
     pub balance_total: Minutes,
+    /// What the balance stood at the day before the range: [`StatsData::carried_in`].
+    pub carried_in: Minutes,
     /// Indices into `buckets` of the whole range's best and worst period. The
     /// chart's footer names the best and worst of the periods it can show, which
     /// is the same thing whenever the chart is not cut short.
@@ -113,6 +115,11 @@ pub struct Bucket {
     pub balance: Minutes,
     pub from: NaiveDate,
     pub to: NaiveDate,
+    /// What the balance stands at when this period ends: everything carried into
+    /// the range plus the balances of this bucket and all the ones before it.
+    /// Periods that have not happened yet add nothing, so the line stays flat
+    /// at today's value instead of running on into the future.
+    pub running: Minutes,
 }
 
 /// The bar width a range is drawn at: a week shows its days, a month its weeks,
@@ -149,6 +156,9 @@ fn bucket_label(start: NaiveDate, g: Granularity) -> String {
 /// Split `from`..=`to` into buckets of `g` and sum the balance of the days that
 /// fall into each. Buckets with no days at all stay in, flat at zero, so the
 /// chart keeps the shape of the range.
+///
+/// Each bucket also carries the running balance at its end, starting from
+/// `carried_in` — what the balance stood at the day before `from`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_buckets(
     days: &[Day],
@@ -159,6 +169,7 @@ pub fn build_buckets(
     from: NaiveDate,
     to: NaiveDate,
     g: Granularity,
+    carried_in: Minutes,
 ) -> Vec<Bucket> {
     let ctx = TodayCtx { today, clocked_in };
     let mut out: Vec<Bucket> = Vec::new();
@@ -170,6 +181,7 @@ pub fn build_buckets(
             balance: Minutes::ZERO,
             from: start,
             to: end,
+            running: Minutes::ZERO,
         });
         let Some(next) = end.succ_opt() else { break };
         start = next;
@@ -186,6 +198,11 @@ pub fn build_buckets(
         {
             b.balance += day_stats(day, rules, cal, &ctx).balance;
         }
+    }
+    let mut running = carried_in;
+    for b in &mut out {
+        running += b.balance;
+        b.running = running;
     }
     out
 }
@@ -244,6 +261,7 @@ pub fn build_stats(
         buckets: vec![],
         granularity: granularity_for(kind),
         balance_total: Minutes::ZERO,
+        carried_in: data.carried_in,
         best: None,
         worst: None,
         cut_at: anchor.min(today),
@@ -301,6 +319,7 @@ pub fn build_stats(
         data.from,
         data.to,
         v.granularity,
+        data.carried_in,
     );
     v.balance_total = v.buckets.iter().map(|b| b.balance).sum();
     (v.best, v.worst) = best_worst(&v.buckets);
@@ -763,6 +782,7 @@ mod tests {
             from,
             to,
             g,
+            Minutes::ZERO,
         )
     }
 
@@ -844,9 +864,55 @@ mod tests {
             d(2026, 9, 1),
             d(2026, 9, 30),
             Granularity::Week,
+            Minutes::ZERO,
         );
         assert_eq!(b[0].balance, Minutes::ZERO);
         assert_eq!(b[1].balance, Minutes(24));
+    }
+
+    /// The running balance carries everything before the range into the first
+    /// bar and then only ever moves by the period's own balance. Days before the
+    /// start date are no part of it, and the periods after today stay where the
+    /// balance stands today instead of walking on into an empty future.
+    #[test]
+    fn running_balances_accumulate_from_what_is_carried_in() {
+        let mut r = rules();
+        r.start_date = d(2026, 9, 9);
+        r.initial_balance = Minutes(60);
+        // The range opens before the start date, so the hour of overtime the
+        // balance started at is all there is to carry in.
+        let b = build_buckets(
+            &[
+                plus24(d(2026, 9, 1)),
+                plus24(d(2026, 9, 9)),
+                missing(d(2026, 9, 10)),
+            ],
+            &r,
+            &HolidayCalendar::default(),
+            d(2026, 9, 15),
+            false,
+            d(2026, 9, 1),
+            d(2026, 9, 30),
+            Granularity::Week,
+            Minutes(60),
+        );
+        // KW 36 is entirely before the start date: nothing of its own, and the
+        // balance stands where it was carried in.
+        assert_eq!(b[0].balance, Minutes::ZERO);
+        assert_eq!(b[0].running, Minutes(60));
+        // KW 37 earns +24 and misses a whole target.
+        assert_eq!(b[1].balance, Minutes(24 - 468));
+        assert_eq!(b[1].running, Minutes(60 + 24 - 468));
+        // The weeks from today on are flat at today's value.
+        assert!(
+            b[2..].iter().all(|x| x.running == b[1].running),
+            "{:?}",
+            b.iter().map(|x| x.running).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            b.last().unwrap().running,
+            Minutes(60) + b.iter().map(|x| x.balance).sum::<Minutes>()
+        );
     }
 
     #[test]
@@ -875,7 +941,44 @@ mod tests {
             projects: vec![],
             vacation_used_year: 0,
             session_active: false,
+            carried_in: Minutes::ZERO,
         }
+    }
+
+    /// The screen over `kind`, with `carried_in` standing on the books when the
+    /// range opens.
+    fn view_carrying(kind: RangeKind, days: Vec<Day>, carried_in: Minutes) -> StatsView {
+        let (from, to) = range_for(kind, d(2026, 9, 15));
+        let mut r = rules();
+        r.start_date = d(2020, 1, 1);
+        let mut data = stats_data(from, to, days);
+        data.carried_in = carried_in;
+        build_stats(
+            &data,
+            &r,
+            &HolidayCalendar::default(),
+            d(2026, 9, 15),
+            d(2026, 9, 15),
+            30,
+            kind,
+        )
+    }
+
+    /// What the store carried in reaches the view and the bars run on from it.
+    #[test]
+    fn the_view_runs_the_buckets_on_from_what_was_carried_in() {
+        let v = view_carrying(
+            RangeKind::Month,
+            vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
+            Minutes(-30),
+        );
+        assert_eq!(v.carried_in, Minutes(-30));
+        assert_eq!(v.buckets[0].running, Minutes(-30 + 24));
+        assert_eq!(v.buckets[1].running, Minutes(-30 + 24 - 468));
+        assert_eq!(
+            v.buckets.last().unwrap().running,
+            v.carried_in + v.balance_total
+        );
     }
 
     fn view(kind: RangeKind, days: Vec<Day>) -> StatsView {
@@ -1299,6 +1402,7 @@ mod tests {
             // Four vacation days taken this year, one of them inside the range.
             vacation_used_year: 4,
             session_active: false,
+            carried_in: Minutes::ZERO,
         };
         let rules = Rules {
             daily_target: Minutes(468),

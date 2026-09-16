@@ -139,17 +139,24 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 .remove(0),
             projects: ctx.store.list_projects(false)?,
         }),
-        StoreCmd::LoadStats { from, to, year } => StoreReply::Stats(StatsData {
-            from,
-            to,
-            days: ctx.store.days_in(from, to, &ctx.config.calendar())?,
-            projects: ctx.store.list_projects(true)?,
-            // The allowance is a calendar-year budget, so what is left of it never
-            // depends on the range inside the year the user is looking at — but it
-            // does follow the year they navigate to.
-            vacation_used_year: vacation_working_days_in_year(ctx, year)?,
-            session_active: ctx.store.session()?.is_some(),
-        }),
+        StoreCmd::LoadStats { from, to, year } => {
+            let session = ctx.store.session()?.is_some();
+            StoreReply::Stats(StatsData {
+                from,
+                to,
+                days: ctx.store.days_in(from, to, &ctx.config.calendar())?,
+                projects: ctx.store.list_projects(true)?,
+                // The allowance is a calendar-year budget, so what is left of it never
+                // depends on the range inside the year the user is looking at — but it
+                // does follow the year they navigate to.
+                vacation_used_year: vacation_working_days_in_year(ctx, year)?,
+                session_active: session,
+                // What the balance stood at when the range opened — the same walk the
+                // month view's `balance_before` makes, from `start_date` to the day
+                // before the range.
+                carried_in: balance_through(ctx, from.pred_opt().unwrap_or(from), today, session)?,
+            })
+        }
         StoreCmd::AddEntry {
             date,
             start,
@@ -243,5 +250,88 @@ impl PollAsync<UserEvent> for StorePort {
                 "the store thread stopped sending replies".into(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::store::Store;
+    use chrono::NaiveTime;
+    use std::path::Path;
+
+    fn d(y: i32, m: u32, dd: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, dd).unwrap()
+    }
+
+    /// A `Ctx` on an in-memory store, tracking from 1 January 2025 with an hour
+    /// of overtime carried in from before that.
+    fn ctx(home: &Path) -> Ctx {
+        let mut config = Config::load_or_create(home).unwrap();
+        config.start_date = d(2025, 1, 1);
+        config.initial_balance_minutes = 60;
+        Ctx {
+            home: home.to_path_buf(),
+            config,
+            store: Store::open_in_memory().unwrap(),
+        }
+    }
+
+    fn stats(ctx: &Ctx, from: NaiveDate, to: NaiveDate) -> StatsData {
+        match handle(
+            ctx,
+            StoreCmd::LoadStats {
+                from,
+                to,
+                year: from.year(),
+            },
+        )
+        .unwrap()
+        {
+            StoreReply::Stats(s) => s,
+            other => panic!("expected Stats, got {other:?}"),
+        }
+    }
+
+    /// `LoadStats` carries in the balance the range opens on, so a running chart
+    /// goes on from where the ranges before it ended. For a month that is exactly
+    /// what the month view knows as `balance_before`.
+    #[test]
+    fn load_stats_carries_in_the_balance_from_before_the_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(dir.path());
+        let t = |h| NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        // Two nine-hour days in June 2025: +24 minutes each on the daily target.
+        for day in [d(2025, 6, 2), d(2025, 6, 3)] {
+            ctx.store.add_entry(day, t(8), t(17), "Alpha", "").unwrap();
+        }
+        let july = stats(&ctx, d(2025, 7, 1), d(2025, 7, 31));
+        let month = match handle(
+            &ctx,
+            StoreCmd::LoadMonth {
+                year: 2025,
+                month: 7,
+            },
+        )
+        .unwrap()
+        {
+            StoreReply::Month(m) => m,
+            other => panic!("expected Month, got {other:?}"),
+        };
+        assert_eq!(july.carried_in, month.balance_before);
+        // Everything before the range is in there: half a year of unbooked work
+        // days leaves far less than the hour that was carried into 2025.
+        assert!(
+            july.carried_in < Minutes(60),
+            "{:?} should hold the months before July",
+            july.carried_in
+        );
+        // A range that opens on the start date has nothing before it but the
+        // initial balance.
+        assert_eq!(
+            stats(&ctx, d(2025, 1, 1), d(2025, 1, 31)).carried_in,
+            Minutes(60)
+        );
     }
 }

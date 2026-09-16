@@ -175,6 +175,11 @@ pub struct StatsData {
     pub vacation_used_year: u32,
     /// Whether a clock-in is open right now, for today's target rule.
     pub session_active: bool,
+    /// The running balance through the day before `from`: the initial balance
+    /// plus every day balance from `start_date` up to the range. The running
+    /// chart starts from it, so a range never begins at zero as if nothing had
+    /// happened before it.
+    pub carried_in: Minutes,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

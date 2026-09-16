@@ -235,6 +235,7 @@ fn stats_year_model() -> (
         projects: vec![],
         vacation_used_year: 3,
         session_active: false,
+        carried_in: tk::core::Minutes::ZERO,
     });
     (m, rx)
 }
@@ -355,6 +356,7 @@ fn stats_screen_80x24_shifted_month() {
         projects: vec![],
         vacation_used_year: 3,
         session_active: false,
+        carried_in: tk::core::Minutes::ZERO,
     });
     let out = rows(80, 24, |f| m.draw(f));
     let joined = out.join("\n");
