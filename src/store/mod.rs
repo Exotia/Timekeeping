@@ -171,6 +171,10 @@ mod tests {
     fn t(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
     }
+    /// The wall clock a clock-out is asked at: the session's own day unless said otherwise.
+    fn at(date: NaiveDate, h: u32, m: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::new(date, t(h, m))
+    }
 
     #[test]
     fn opens_and_migrates_file_db() {
@@ -381,11 +385,11 @@ mod tests {
         let day = d(2026, 9, 15);
         // Nothing open: there is nothing to book.
         assert!(matches!(
-            s.clock_out(t(9, 0), ""),
+            s.clock_out(at(day, 9, 0), ""),
             Err(StoreError::Constraint(_))
         ));
         s.clock_in(day, t(8, 12), "Alpha").unwrap();
-        let e = s.clock_out(t(10, 30), "review").unwrap();
+        let e = s.clock_out(at(day, 10, 30), "review").unwrap();
         assert_eq!((e.date, e.start, e.end), (day, t(8, 12), t(10, 30)));
         assert_eq!(e.project, "Alpha");
         assert_eq!(e.comment, "review");
@@ -404,7 +408,7 @@ mod tests {
         s.conn()
             .execute("UPDATE session SET project_id = NULL", [])
             .unwrap();
-        assert_eq!(s.clock_out(t(9, 0), "").unwrap().project, "Beta");
+        assert_eq!(s.clock_out(at(day, 9, 0), "").unwrap().project, "Beta");
 
         // With no entry to learn from either, the clock-out says so and keeps the session.
         let s = Store::open_in_memory().unwrap();
@@ -412,7 +416,7 @@ mod tests {
         s.conn()
             .execute("UPDATE session SET project_id = NULL", [])
             .unwrap();
-        let err = s.clock_out(t(9, 0), "").unwrap_err();
+        let err = s.clock_out(at(day, 9, 0), "").unwrap_err();
         assert!(
             matches!(&err, StoreError::Constraint(m) if m.contains("no project")),
             "{err}"
@@ -426,7 +430,9 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let day = d(2026, 9, 15);
         s.clock_in(day, t(8, 12), "Alpha").unwrap();
-        let (e, sess) = s.switch_project(t(10, 30), "Beta", "morning").unwrap();
+        let (e, sess) = s
+            .switch_project(at(day, 10, 30), "Beta", "morning")
+            .unwrap();
         assert_eq!(
             (e.project.as_str(), e.start, e.end),
             ("Alpha", t(8, 12), t(10, 30))
@@ -437,7 +443,7 @@ mod tests {
         assert_eq!(sess.project.as_deref(), Some("Beta"));
 
         // Switching to what is already running is refused, and changes nothing.
-        let err = s.switch_project(t(11, 0), "Beta", "").unwrap_err();
+        let err = s.switch_project(at(day, 11, 0), "Beta", "").unwrap_err();
         assert!(
             matches!(&err, StoreError::Constraint(m) if m.contains("already on")),
             "{err}"
@@ -447,7 +453,7 @@ mod tests {
 
         // Switching in the same minute as the clock-in: the entry is one minute long
         // and the next session starts after it, so the two can never overlap.
-        let (e2, sess2) = s.switch_project(t(10, 30), "Gamma", "").unwrap();
+        let (e2, sess2) = s.switch_project(at(day, 10, 30), "Gamma", "").unwrap();
         assert_eq!((e2.start, e2.end), (t(10, 30), t(10, 31)));
         assert_eq!(sess2.start, t(10, 31));
         assert_eq!(sess2.project.as_deref(), Some("Gamma"));
@@ -457,16 +463,95 @@ mod tests {
 
         // Clocking out inside the minute the switch skipped forward to books that one
         // minute, not a shift running all the way back round the clock.
-        let e3 = s.clock_out(t(10, 30), "").unwrap();
+        let e3 = s.clock_out(at(day, 10, 30), "").unwrap();
         assert_eq!((e3.start, e3.end), (t(10, 31), t(10, 32)));
         assert_eq!(e3.duration(), crate::core::Minutes(1));
 
         // Nothing open at all is a plain "not clocked in".
         s.clear_session().unwrap();
         assert!(matches!(
-            s.switch_project(t(12, 0), "Beta", ""),
+            s.switch_project(at(day, 12, 0), "Beta", ""),
             Err(StoreError::Constraint(_))
         ));
+    }
+
+    #[test]
+    fn a_run_of_same_minute_switches_books_one_minute_each() {
+        // Every same-minute switch puts the next session one minute ahead of the wall
+        // clock. Each of them must still book its own minute, in order and without
+        // overlapping — never a shift running back round the clock.
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        let now = at(day, 9, 35);
+        s.clock_in(day, t(9, 35), "A").unwrap();
+        s.switch_project(now, "B", "").unwrap();
+        s.switch_project(now, "C", "").unwrap();
+        let last = s.clock_out(now, "").unwrap();
+        assert_eq!(
+            (last.project.as_str(), last.start, last.end),
+            ("C", t(9, 37), t(9, 38))
+        );
+        let list = s.entries_on(day).unwrap();
+        assert_eq!(
+            list.iter()
+                .map(|e| (e.project.as_str(), e.start, e.end))
+                .collect::<Vec<_>>(),
+            vec![
+                ("A", t(9, 35), t(9, 36)),
+                ("B", t(9, 36), t(9, 37)),
+                ("C", t(9, 37), t(9, 38)),
+            ]
+        );
+        assert!(s.session().unwrap().is_none());
+    }
+
+    #[test]
+    fn an_overnight_session_books_the_whole_night() {
+        // The wall clock is on the next day, so an end before the start is a genuine
+        // crossing: the store must not mistake it for the same-minute case.
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(0, 10), "Alpha").unwrap();
+        let e = s.clock_out(at(d(2026, 9, 16), 0, 9), "").unwrap();
+        assert_eq!((e.date, e.start, e.end), (day, t(0, 10), t(0, 9)));
+        assert_eq!(e.duration(), crate::core::Minutes(1439));
+        // A clock-out dated before the session is a broken clock, not an entry.
+        s.clock_in(day, t(8, 0), "Alpha").unwrap();
+        let err = s.clock_out(at(d(2026, 9, 14), 8, 30), "").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Constraint(m) if m.contains("before the session date")),
+            "{err}"
+        );
+        assert!(s.session().unwrap().is_some());
+    }
+
+    #[test]
+    fn a_switch_across_midnight_opens_the_session_on_the_next_day() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(23, 59), "Alpha").unwrap();
+        let (e, sess) = s
+            .switch_project(at(d(2026, 9, 16), 0, 0), "Beta", "")
+            .unwrap();
+        assert_eq!((e.date, e.start, e.end), (day, t(23, 59), t(0, 0)));
+        assert!(e.crosses_midnight());
+        // The new session belongs to the day the entry ended on, not the one it began on.
+        assert_eq!((sess.date, sess.start), (d(2026, 9, 16), t(0, 0)));
+        assert_eq!(sess.project.as_deref(), Some("Beta"));
+    }
+
+    #[test]
+    fn clocking_out_on_another_project_books_the_override() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(8, 0), "Alpha").unwrap();
+        let e = s
+            .clock_out_with(at(day, 9, 0), Some("Other"), "wrong project")
+            .unwrap();
+        assert_eq!(e.project, "Other");
+        assert_eq!(e.comment, "wrong project");
+        assert!(s.session().unwrap().is_none());
+        assert_eq!(s.entries_on(day).unwrap()[0].project, "Other");
     }
 
     #[test]

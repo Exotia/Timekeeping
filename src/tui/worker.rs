@@ -195,7 +195,7 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             StoreReply::Changed(format!("Clocked in on {project} at {}", t.format("%H:%M")))
         }
         StoreCmd::Switch { project } => {
-            let (e, s) = ctx.store.switch_project(now.time(), &project, "")?;
+            let (e, s) = ctx.store.switch_project(now, &project, "")?;
             StoreReply::Changed(format!(
                 "Booked {}–{} {} · now on {}",
                 e.start.format("%H:%M"),
@@ -207,7 +207,7 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
         StoreCmd::ClockOut { project, comment } => {
             let e = ctx
                 .store
-                .clock_out_with(now.time(), project.as_deref(), &comment)?;
+                .clock_out_with(now, project.as_deref(), &comment)?;
             StoreReply::Changed(format!(
                 "Clocked out: {}–{} {} ({})",
                 e.start.format("%H:%M"),

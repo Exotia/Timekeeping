@@ -70,7 +70,7 @@ impl Store {
 
     /// The body of [`Store::add_entry`], without the transaction around it, so that a
     /// caller already inside one (the clock-out path) can book an entry as part of it.
-    pub(crate) fn add_entry_locked(
+    pub(super) fn add_entry_locked(
         &self,
         date: NaiveDate,
         start: NaiveTime,

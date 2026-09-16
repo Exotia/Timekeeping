@@ -1,8 +1,16 @@
-use chrono::{NaiveDate, NaiveTime};
+use std::cmp::Ordering;
+
+use chrono::{Days, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use rusqlite::{OptionalExtension, params};
 
 use super::{Store, StoreError, StoreResult, date_str, parse_date, time_from_min};
 use crate::core::{Entry, clock_out_end, minutes_of};
+
+/// Entries are stored at minute granularity, so the seconds `Local::now()` carries
+/// are dropped before anything is compared or written.
+fn to_minute(t: NaiveTime) -> NaiveTime {
+    NaiveTime::from_hms_opt(t.hour(), t.minute(), 0).unwrap_or(t)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
@@ -35,20 +43,24 @@ impl Store {
         self.in_write_tx(|| self.clock_in_locked(date, start, project))
     }
 
-    /// Close the open session at `end`, booking the time to the session's project.
-    pub fn clock_out(&self, end: NaiveTime, comment: &str) -> StoreResult<Entry> {
-        self.clock_out_with(end, None, comment)
+    /// Close the open session at the wall clock `now`, booking the time to the
+    /// session's project.
+    ///
+    /// `now` is a whole date-time because only the date tells an overnight session
+    /// apart from a clock-out that lands before the session start.
+    pub fn clock_out(&self, now: NaiveDateTime, comment: &str) -> StoreResult<Entry> {
+        self.clock_out_with(now, None, comment)
     }
 
     /// [`Store::clock_out`], with `project` booking the entry to something other than
     /// the session's project — what `tk out -p NAME` does to correct a clock-in.
     pub fn clock_out_with(
         &self,
-        end: NaiveTime,
+        now: NaiveDateTime,
         project: Option<&str>,
         comment: &str,
     ) -> StoreResult<Entry> {
-        self.in_write_tx(|| self.clock_out_locked(end, project, comment))
+        self.in_write_tx(|| self.clock_out_locked(now, project, comment))
     }
 
     /// Book the running session and open a new one on `project`, in one transaction.
@@ -57,7 +69,7 @@ impl Store {
     /// rule's extra minute can never make the two overlap.
     pub fn switch_project(
         &self,
-        now: NaiveTime,
+        now: NaiveDateTime,
         project: &str,
         comment: &str,
     ) -> StoreResult<(Entry, Session)> {
@@ -68,7 +80,17 @@ impl Store {
                 return Err(StoreError::Constraint(format!("already on {target}")));
             }
             let entry = self.clock_out_locked(now, None, comment)?;
-            self.clock_in_locked(entry.date, entry.end, target)?;
+            // An entry that ran past midnight ends on the following day, and that is
+            // the day the next session belongs to.
+            let date = if entry.crosses_midnight() {
+                entry
+                    .date
+                    .checked_add_days(Days::new(1))
+                    .ok_or_else(|| StoreError::Constraint("date out of range".into()))?
+            } else {
+                entry.date
+            };
+            self.clock_in_locked(date, entry.end, target)?;
             let session = self.session()?.expect("just clocked in");
             Ok((entry, session))
         })
@@ -106,7 +128,7 @@ impl Store {
     /// [`Store::clock_out_with`] without the transaction around it.
     fn clock_out_locked(
         &self,
-        end: NaiveTime,
+        now: NaiveDateTime,
         project: Option<&str>,
         comment: &str,
     ) -> StoreResult<Entry> {
@@ -124,7 +146,30 @@ impl Store {
                 ));
             }
         };
-        let end = clock_out_end(s.start, end);
+        let end = to_minute(now.time());
+        let end = match now.date().cmp(&s.date) {
+            // Still the day the session began on. The wall clock can sit at — or even
+            // before — the session start, because every same-minute switch opens the
+            // next session one minute further ahead of it; clamping to the start makes
+            // such a clock-out the shortest possible entry rather than a shift that
+            // runs all the way back round the clock.
+            Ordering::Equal => clock_out_end(
+                s.start,
+                if minutes_of(end) < minutes_of(s.start) {
+                    s.start
+                } else {
+                    end
+                },
+            ),
+            // A later day is a genuine overnight session: core reads an end at or
+            // before the start as the midnight wrap.
+            Ordering::Greater => end,
+            Ordering::Less => {
+                return Err(StoreError::Constraint(
+                    "clock-out time is before the session date".into(),
+                ));
+            }
+        };
         let entry = self.add_entry_locked(s.date, s.start, end, &project, comment)?;
         self.clear_session()?;
         Ok(entry)

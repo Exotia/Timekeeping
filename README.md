@@ -223,8 +223,8 @@ carry a target, so they need no day type).
 `i` opens a one-field project picker: type to filter the known projects, `↑`
 and `↓` to move the highlight, `Enter` or `Tab` to take it, `Esc` to cancel. A
 name that matches nothing is created as a new project. With nothing running the
-picker is titled "Clock in" and offers the last used project first; while
-clocked in it is titled "Switch project — currently NAME", leaves that project
+picker is titled "Clock in — project" and offers the last used project first;
+while clocked in it is titled "Switch project — currently NAME", leaves that project
 out, and choosing one records the running session and clocks in on the new
 project in a single step. The title bar names the project it is counting for:
 `⏱ Alpha in since 08:12 (03:41)`.

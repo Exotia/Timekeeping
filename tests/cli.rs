@@ -108,7 +108,7 @@ fn clock_in_and_out() {
         .arg("out")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Beta")); // last-used project
+        .stdout(predicate::str::contains("Beta")); // the project the session was opened on
     tk(home)
         .arg("out")
         .assert()
@@ -165,6 +165,36 @@ fn clock_in_switch_and_out_are_project_aware() {
     assert_eq!(rows.len(), 2, "{csv}");
     assert!(rows[0].contains(",Alpha,"), "{csv}");
     assert!(rows[1].contains(",Beta,"), "{csv}");
+}
+
+#[test]
+fn several_switches_inside_one_minute_each_book_their_own_minute() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // Every switch opens the next session a minute ahead of the wall clock, so a run of
+    // them inside one minute must still book one minute each — no overlap, no error.
+    tk(home).args(["in", "-p", "Alpha"]).assert().success();
+    tk(home).args(["switch", "-p", "Beta"]).assert().success();
+    tk(home)
+        .args(["switch", "-p", "Gamma"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("now on Gamma"));
+    tk(home)
+        .arg("out")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Gamma"));
+    let shown = tk(home)
+        .args(["export", "--format", "csv"])
+        .assert()
+        .success();
+    let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    let rows: Vec<&str> = csv.lines().skip(1).filter(|l| !l.is_empty()).collect();
+    assert_eq!(rows.len(), 3, "{csv}");
+    for (row, project) in rows.iter().zip(["Alpha", "Beta", "Gamma"]) {
+        assert!(row.contains(&format!(",{project},")), "{csv}");
+    }
 }
 
 #[test]

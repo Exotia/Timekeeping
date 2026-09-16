@@ -78,31 +78,33 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
     let today = now.date();
     match cmd {
         Command::In { force, project } => {
-            if force {
-                ctx.store.clear_session()?;
-            }
-            // A session that is already open is the more useful complaint, so it comes
-            // before the one about a missing project. The store checks it again, under
-            // its own lock, so a concurrent `tk in` is still refused.
-            if let Some(s) = ctx.store.session()? {
+            // An open session is a more useful complaint than a missing project, so it
+            // comes first — unless `--force` is about to replace it anyway. The store
+            // checks it again under its own lock, so a concurrent `tk in` is refused.
+            if !force && let Some(s) = ctx.store.session()? {
                 bail!(
                     "already clocked in since {} {}",
                     s.date,
                     s.start.format("%H:%M")
                 );
             }
-            let t = now.time().with_second(0).unwrap_or(now.time());
+            // Resolved before `--force` discards anything: a clock-in that cannot name
+            // its project must not have thrown away the session that was running.
             let project = match project.or(ctx.store.last_used_project()?) {
                 Some(p) => p,
                 None => bail!("no project yet; pass --project NAME"),
             };
+            if force {
+                ctx.store.clear_session()?;
+            }
+            let t = now.time().with_second(0).unwrap_or(now.time());
             ctx.store.clock_in(today, t, &project)?;
             writeln!(out, "Clocked in on {project} at {}", t.format("%H:%M"))?;
         }
         Command::Switch { project, comment } => {
             let (e, s) =
                 ctx.store
-                    .switch_project(now.time(), &project, comment.as_deref().unwrap_or(""))?;
+                    .switch_project(now, &project, comment.as_deref().unwrap_or(""))?;
             writeln!(
                 out,
                 "Booked {}–{} {} ({}) · now on {} since {}",
@@ -117,7 +119,7 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
         Command::Out { project, comment } => {
             // One transaction in the store: the entry and the cleared session, or neither.
             let e = ctx.store.clock_out_with(
-                now.time(),
+                now,
                 project.as_deref(),
                 comment.as_deref().unwrap_or(""),
             )?;
