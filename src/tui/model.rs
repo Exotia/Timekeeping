@@ -1192,9 +1192,12 @@ impl Model {
             }
             StoreReply::Failed(e) => self.set_status(e, true),
         }
-        // A box waiting for its day opens as soon as that day is in hand.
+        // A box waiting for its day opens as soon as that day is in hand — and
+        // not before: the reply that asked for it arrives while the day on
+        // screen is still the one from before the write, which may well hold
+        // other entries but not yet the one just booked.
         if let Some(SplitFollowup::Open { date, entry_id }) = self.split_followup.clone()
-            && !self.entries_on(date).is_empty()
+            && self.entries_on(date).iter().any(|e| e.id == entry_id)
         {
             self.split_followup = None;
             self.open_break_split(date, entry_id);
@@ -2636,6 +2639,60 @@ mod tests {
             message: "Clocked out: 12:00–17:00 Beta (+05:00)".into(),
         }));
         assert!(m.break_split.is_none());
+    }
+
+    /// The reply comes back before the refreshed day does, and the day on screen
+    /// is the one from before the clock-out — the morning it booked earlier, but
+    /// not the entry just written. The box has to wait for the entry it is about.
+    #[test]
+    fn the_box_waits_for_the_day_that_holds_the_booked_entry() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        let entries = two_project_day(today);
+        // Only the morning is on screen so far.
+        m.month = Some(month_data(
+            today,
+            vec![Day {
+                date: today,
+                kind: DayKind::Work,
+                entries: vec![entries[0].clone()],
+            }],
+            None,
+        ));
+        m.update(Msg::Store(StoreReply::Booked {
+            entry_id: 2,
+            date: today,
+            session_projects: 2,
+            deduction: Minutes(48),
+            message: "Clocked out: 12:00–17:00 Beta (+05:00)".into(),
+        }));
+        assert!(m.break_split.is_none(), "the entry is not on screen yet");
+        assert_eq!(
+            m.split_followup,
+            Some(SplitFollowup::Open {
+                date: today,
+                entry_id: 2
+            }),
+            "so the box stays queued"
+        );
+        // The refresh brings the entry, and the box opens on its session.
+        m.update(Msg::Store(StoreReply::Month(month_data(
+            today,
+            vec![Day {
+                date: today,
+                kind: DayKind::Work,
+                entries,
+            }],
+            None,
+        ))));
+        assert_eq!(
+            m.break_split
+                .as_ref()
+                .expect("now it opens")
+                .session_entry_ids,
+            vec![1, 2]
+        );
+        assert_eq!(m.split_followup, None);
     }
 
     /// Saving an entry in the day editor is not the moment for a box, but the

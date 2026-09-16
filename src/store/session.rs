@@ -109,8 +109,12 @@ impl Store {
             // over without the next entry overlapping it.
             let date = self.day_after_entry(&entry)?;
             self.conn().execute(
-                "UPDATE session SET date = ?1, start_min = ?2, state = 'break' WHERE id = 1",
-                params![date_str(date), minutes_of(entry.end)],
+                "UPDATE session SET date = ?1, start_min = ?2, state = ?3 WHERE id = 1",
+                params![
+                    date_str(date),
+                    minutes_of(entry.end),
+                    SessionState::Break.as_str()
+                ],
             )?;
             Ok(entry)
         })
@@ -239,12 +243,13 @@ impl Store {
             now
         };
         self.conn().execute(
-            "UPDATE session SET date = ?1, start_min = ?2, project_id = ?3, state = 'working'
+            "UPDATE session SET date = ?1, start_min = ?2, project_id = ?3, state = ?4
              WHERE id = 1",
             params![
                 date_str(back_at.date()),
                 minutes_of(to_minute(back_at.time())),
-                p.id
+                p.id,
+                SessionState::Working.as_str()
             ],
         )?;
         Ok(self.session()?.expect("the session was just updated"))
