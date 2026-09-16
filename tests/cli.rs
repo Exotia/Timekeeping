@@ -66,11 +66,12 @@ fn add_day_and_status_and_export() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "date,start,end,project,comment,gross,net",
+            "date,start,end,project,comment,gross,net,break",
         ))
-        // 6:30 gross in one session: 48 minutes off it leaves 5:42 net.
+        // 6:30 gross in one session: 48 minutes off it leaves 5:42 net, and the
+        // `break` column says where the difference went.
         .stdout(predicate::str::contains(
-            "2026-09-14,09:00,15:30,Alpha,note,+06:30,+05:42",
+            "2026-09-14,09:00,15:30,Alpha,note,+06:30,+05:42,00:48",
         ));
     tk(home)
         .args(["export", "--format", "json"])
@@ -78,7 +79,7 @@ fn add_day_and_status_and_export() {
         .success()
         .stdout(predicate::str::contains("\"project\":\"Alpha\""))
         .stdout(predicate::str::contains(
-            "\"gross_minutes\":390,\"net_minutes\":342",
+            "\"gross_minutes\":390,\"net_minutes\":342,\"break_minutes\":48",
         ));
 }
 
@@ -153,8 +154,8 @@ fn a_booked_entry_reports_its_own_net() {
         .assert()
         .success();
     let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
-    assert!(csv.contains("Alpha,,+04:00,+04:00"), "{csv}");
-    assert!(csv.contains("Beta,,+05:00,+04:12"), "{csv}");
+    assert!(csv.contains("Alpha,,+04:00,+04:00,00:00"), "{csv}");
+    assert!(csv.contains("Beta,,+05:00,+04:12,00:48"), "{csv}");
 }
 
 #[test]
@@ -194,6 +195,109 @@ fn clock_in_and_out() {
         .stdout(predicate::str::contains("· net "));
     tk(home)
         .arg("out")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not clocked in"));
+}
+
+/// A break books the work so far and keeps the clock on the project: coming back
+/// is a `tk in`, and the two halves are two sessions, each charged on its own.
+#[test]
+fn break_books_the_work_so_far_and_resumes_on_the_same_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    tk(home).args(["in", "-p", "Alpha"]).assert().success();
+    tk(home)
+        .args(["break", "-m", "lunch"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Booked "))
+        .stdout(predicate::str::contains("Alpha"))
+        .stdout(predicate::str::contains("· on break since "));
+    let shown = tk(home).arg("status").assert().success();
+    let line = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    assert!(line.contains("on break"), "{line}");
+    assert!(line.contains("Alpha"), "{line}");
+    assert!(line.contains("balance"), "{line}");
+    // A switch is not the way back, and it says which key is.
+    tk(home)
+        .args(["switch", "-p", "Beta"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("on break"));
+    // Coming back without naming a project comes back on the remembered one.
+    tk(home)
+        .arg("in")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Resumed Alpha at "));
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\u{23f1} Alpha"));
+    tk(home).arg("out").assert().success();
+    // Both halves are on the books, the morning booked by the break itself.
+    let shown = tk(home)
+        .args(["export", "--format", "csv"])
+        .assert()
+        .success();
+    let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    let rows: Vec<&str> = csv.lines().skip(1).filter(|l| !l.is_empty()).collect();
+    assert_eq!(rows.len(), 2, "{csv}");
+    assert!(rows[0].contains(",Alpha,lunch,"), "{csv}");
+    assert!(rows[1].contains(",Alpha,"), "{csv}");
+}
+
+#[test]
+fn a_break_can_be_resumed_on_another_project_or_ended_outright() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    tk(home).args(["in", "-p", "Alpha"]).assert().success();
+    tk(home).arg("break").assert().success();
+    // A second break has nothing left to book.
+    tk(home)
+        .arg("break")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already on break"));
+    tk(home)
+        .args(["in", "-p", "Beta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Resumed Beta at "));
+    tk(home).arg("out").assert().success();
+    let shown = tk(home)
+        .args(["export", "--format", "csv"])
+        .assert()
+        .success();
+    let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    let rows: Vec<&str> = csv.lines().skip(1).filter(|l| !l.is_empty()).collect();
+    assert_eq!(rows.len(), 2, "{csv}");
+    assert!(rows[0].contains(",Alpha,"), "{csv}");
+    assert!(rows[1].contains(",Beta,"), "{csv}");
+
+    // Clocking out on a break ends it and books nothing more. A home of its own,
+    // because a clock-in a minute after this one would land inside the entries
+    // above — everything here happens in the same wall-clock minute.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    tk(home).args(["in", "-p", "Alpha"]).assert().success();
+    tk(home).arg("break").assert().success();
+    tk(home)
+        .arg("out")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Break ended after "))
+        .stdout(predicate::str::contains("nothing to book"));
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not clocked in"));
+    // Nothing to take a break from once the clock is off.
+    tk(home)
+        .arg("break")
         .assert()
         .failure()
         .stderr(predicate::str::contains("not clocked in"));

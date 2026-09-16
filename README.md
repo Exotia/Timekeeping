@@ -125,6 +125,11 @@ A day with no entries never gets a deduction. While you are clocked in, the
 running session counts too, so `tk status` shows the same figures the day will
 have once you clock out.
 
+`tk break` (and `b` in the TUI) is the way to tell `tk` about a pause while it
+is happening: it books the work up to that minute and keeps the clock on the
+project, paused, so the afternoon starts a fresh session exactly where you come
+back. `tk in` resumes, `tk out` ends the break without booking anything more.
+
 **Project time is net time.** A session's deduction belongs to the session, not
 to any one entry of it, so one of them has to carry it. By default that is the
 project you were working on when the clock stopped: the whole break falls on the
@@ -181,10 +186,11 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | Command | Options | What it does |
 | --- | --- | --- |
 | `tk` | | Open the terminal UI. |
-| `tk in` | `-p, --project NAME`<br>`--force` | Clock in at the current minute on `NAME`. Without `--project` the last used project is taken; on a brand-new database there is none and the command fails. `--force` replaces an existing open clock-in. |
+| `tk in` | `-p, --project NAME`<br>`--force` | Clock in at the current minute on `NAME`. Without `--project` the last used project is taken; on a brand-new database there is none and the command fails. On a break this comes back from it instead, on the remembered project or on `NAME`. `--force` replaces an existing open clock-in. |
 | `tk switch` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Record the running session and clock in on `NAME` in one step, reporting the booked entry's gross and net. The new session starts exactly where the recorded entry ends, so the two never overlap. Switching to the project already running is refused. |
-| `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry on the project it was opened with, reporting its gross, its net, the day's net and the new balance. `--project` books it on another one instead, which is how a clock-in on the wrong project is corrected. |
-| `tk status` | | One line for prompts and status bars. Clocked in: the project, the running time, the time you clocked in at, today's net and the overall balance. Otherwise: `not clocked in`, today's net and the overall balance. |
+| `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry on the project it was opened with, reporting its gross, its net, the day's net and the new balance. `--project` books it on another one instead, which is how a clock-in on the wrong project is corrected. On a break it only ends the break: the work before it was booked when the break began, so there is nothing left to record. |
+| `tk break` | `-m, --comment TEXT` | Take a break: the work so far is booked straight away, and the clock stays on the project, paused, until you come back. `tk in` resumes it — on the same project unless you name another — and `tk out` ends the break without booking anything more. |
+| `tk status` | | One line for prompts and status bars. Clocked in: the project, the running time, the time you clocked in at, today's net and the overall balance. On a break: `☕ on break`, how long it has lasted, since when, the project waiting, today's net and the balance. Otherwise: `not clocked in`, today's net and the overall balance. |
 | `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. Reports the entry's gross, its net after its share of the break, and the day's net. |
 | `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. |
 | `tk projects` | | Same as `tk projects list`. |
@@ -211,6 +217,8 @@ midnight; `END` equal to `START` is rejected.
 
 ```bash
 tk in -p Alpha
+tk break -m "morning"          # books the morning, keeps the clock on Alpha
+tk in                          # back on Alpha
 tk switch -p Beta -m "sprint review"
 tk out -m "wrap-up"
 tk add yesterday 9-1730 -p Alpha
@@ -408,9 +416,11 @@ tk export --format csv -o hours.csv
 tk export --format json --from 2026-01-01 --to 2026-12-31 -o 2026.json
 ```
 
-The CSV columns are `date,start,end,project,comment,gross,net`, where `net` is
-the entry's gross minus its share of its session's break deduction; JSON records
-carry the same fields plus `gross_minutes` and `net_minutes` as integers.
+The CSV columns are `date,start,end,project,comment,gross,net,break`, where
+`break` is what this entry paid towards its session's break deduction (always
+positive, so it carries no sign) and `net` is its gross minus that; JSON records
+carry the same fields plus `gross_minutes`, `net_minutes` and `break_minutes` as
+integers.
 
 ## Public holidays
 

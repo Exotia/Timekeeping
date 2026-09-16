@@ -66,6 +66,23 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
     let balance = balance_as_of(ctx, today, session.is_some())?;
     let entries = ctx.store.entries_on(today)?;
     Ok(match session {
+        // On a break the work so far is already booked, so today's net is the
+        // day's own net; what is running is the break itself.
+        Some(s) if s.state.is_break() => {
+            let paused = running_minutes(NaiveDateTime::new(s.date, s.start), now);
+            let net = day_net(ctx, today, true)?;
+            format!(
+                "☕ on break {} (since {}){} · today {} · balance {}",
+                paused.fmt_unsigned(f),
+                s.start.format("%H:%M"),
+                s.project
+                    .as_deref()
+                    .map(|p| format!(" · {p}"))
+                    .unwrap_or_default(),
+                net.fmt_signed(f),
+                balance.fmt_signed(f)
+            )
+        }
         Some(s) => {
             // The session carries its own date, so a clock-in from yesterday keeps
             // counting instead of wrapping back to 00:00 at midnight.
@@ -87,20 +104,7 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
             )
         }
         None => {
-            let net: Minutes = {
-                let cal = ctx.config.calendar();
-                let d = ctx.store.days_in(today, today, &cal)?.remove(0);
-                day_stats(
-                    &d,
-                    &rules,
-                    &cal,
-                    &TodayCtx {
-                        today,
-                        clocked_in: false,
-                    },
-                )
-                .net
-            };
+            let net = day_net(ctx, today, false)?;
             format!(
                 "not clocked in · today {} · balance {}",
                 net.fmt_signed(f),
@@ -110,6 +114,22 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
     })
 }
 
+/// The net of one day as the books stand, without a running clock in it.
+fn day_net(ctx: &Ctx, date: NaiveDate, clocked_in: bool) -> anyhow::Result<Minutes> {
+    let cal = ctx.config.calendar();
+    let d = ctx.store.days_in(date, date, &cal)?.remove(0);
+    Ok(day_stats(
+        &d,
+        &ctx.config.rules(),
+        &cal,
+        &TodayCtx {
+            today: date,
+            clocked_in,
+        },
+    )
+    .net)
+}
+
 pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
     let now = now_local();
     let today = now.date();
@@ -117,6 +137,21 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
     let f: HoursFormat = ctx.config.hours_format();
     match cmd {
         Command::In { force, project } => {
+            // Clocking in on a break is how the user comes back to work, so it
+            // resumes the session rather than complaining that one is open.
+            if !force
+                && let Some(s) = ctx.store.session()?
+                && s.state.is_break()
+            {
+                let s = ctx.store.resume(now, project.as_deref())?;
+                writeln!(
+                    out,
+                    "Resumed {} at {}",
+                    s.project.as_deref().unwrap_or("the last project"),
+                    s.start.format("%H:%M")
+                )?;
+                return Ok(());
+            }
             // An open session is a more useful complaint than a missing project, so it
             // comes first — unless `--force` is about to replace it anyway. The store
             // checks it again under its own lock, so a concurrent `tk in` is refused.
@@ -139,6 +174,26 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             let t = now.time().with_second(0).unwrap_or(now.time());
             ctx.store.clock_in(today, t, &project)?;
             writeln!(out, "Clocked in on {project} at {}", t.format("%H:%M"))?;
+        }
+        Command::Break { comment } => {
+            let e = ctx
+                .store
+                .take_break(now, comment.as_deref().unwrap_or(""))?;
+            let since = ctx
+                .store
+                .session()?
+                .map(|s| s.start)
+                .unwrap_or(e.end)
+                .format("%H:%M")
+                .to_string();
+            writeln!(
+                out,
+                "Booked {}–{} {} ({}) · on break since {since}",
+                e.start.format("%H:%M"),
+                e.end.format("%H:%M"),
+                e.project,
+                e.duration().fmt_signed(f),
+            )?;
         }
         Command::Switch { project, comment } => {
             let (e, s) =
@@ -380,17 +435,20 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             let mut text = String::new();
             match format.as_str() {
                 "csv" => {
-                    text.push_str("date,start,end,project,comment,gross,net\n");
+                    text.push_str("date,start,end,project,comment,gross,net,break\n");
                     for (e, net) in entries.iter().zip(&nets) {
                         text.push_str(&format!(
-                            "{},{},{},{},{},{},{}\n",
+                            "{},{},{},{},{},{},{},{}\n",
                             e.date,
                             e.start.format("%H:%M"),
                             e.end.format("%H:%M"),
                             csv_quote(&e.project),
                             csv_quote(&e.comment),
                             e.duration(),
-                            net
+                            net,
+                            // What this entry paid towards its session's break:
+                            // never negative, so it carries no sign.
+                            (e.duration() - *net).hhmm()
                         ));
                     }
                 }
@@ -401,14 +459,15 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                             text.push(',');
                         }
                         text.push_str(&format!(
-                            "{{\"date\":\"{}\",\"start\":\"{}\",\"end\":\"{}\",\"project\":{},\"comment\":{},\"gross_minutes\":{},\"net_minutes\":{}}}",
+                            "{{\"date\":\"{}\",\"start\":\"{}\",\"end\":\"{}\",\"project\":{},\"comment\":{},\"gross_minutes\":{},\"net_minutes\":{},\"break_minutes\":{}}}",
                             e.date,
                             e.start.format("%H:%M"),
                             e.end.format("%H:%M"),
                             json_quote(&e.project),
                             json_quote(&e.comment),
                             e.duration().0,
-                            net.0
+                            net.0,
+                            (e.duration() - *net).0
                         ));
                     }
                     text.push_str("]\n");

@@ -229,12 +229,21 @@ impl Store {
             }
         };
         let p = self.get_or_create_project(&project)?;
+        // The work goes on from the wall clock, but never from before the break
+        // began: the break starts where the last entry ended, so a resume inside
+        // that same minute (or on a clock that has gone backwards) would open a
+        // session overlapping the entry already booked.
+        let back_at = if NaiveDateTime::new(s.date, s.start) > now {
+            NaiveDateTime::new(s.date, s.start)
+        } else {
+            now
+        };
         self.conn().execute(
             "UPDATE session SET date = ?1, start_min = ?2, project_id = ?3, state = 'working'
              WHERE id = 1",
             params![
-                date_str(now.date()),
-                minutes_of(to_minute(now.time())),
+                date_str(back_at.date()),
+                minutes_of(to_minute(back_at.time())),
                 p.id
             ],
         )?;

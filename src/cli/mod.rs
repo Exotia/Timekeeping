@@ -39,6 +39,12 @@ pub enum Command {
         #[arg(short = 'm', long)]
         comment: Option<String>,
     },
+    /// Book the work so far and pause the clock on the same project
+    Break {
+        /// Comment for the entry being booked
+        #[arg(short = 'm', long)]
+        comment: Option<String>,
+    },
     /// Book the running session and clock in on another project
     Switch {
         /// Project to switch to
