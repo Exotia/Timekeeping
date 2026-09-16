@@ -527,6 +527,7 @@ mod tests {
         let rules = Rules {
             daily_target: Minutes(468),
             tiers: default_tiers(),
+            break_gap: Minutes(30),
             start_date: d(2026, 9, 1),
             initial_balance: Minutes::ZERO,
         };
@@ -636,10 +637,11 @@ mod tests {
         // future day 16 is Empty
         let e = row_index_of(&v, d(2026, 9, 16)).unwrap();
         assert!(matches!(v.rows[e].kind, RowKind::Empty));
-        // totals: net = 4h-18 + (6h-18) = 222 + 342 = 564; target = weekdays 1..15
+        // totals: net = 4h-18 + 6h = 222 + 360 = 582 — the 14th runs 9-12 and
+        // 13-16, and that hour of lunch is break enough; target = weekdays 1..15
         // with target: 1,3,4,7,8,9,10,11,14 (15=today, no entries -> no target);
         // day2 vacation and day17 holiday carry no target.
-        assert_eq!(v.net, Minutes(564));
+        assert_eq!(v.net, Minutes(582));
         assert_eq!(v.target, Minutes(468 * 9));
         // Project totals use gross entry durations: Alpha 360, Beta 240.
         assert_eq!(v.project_totals[0].0, "Alpha");
@@ -814,7 +816,7 @@ mod tests {
         assert!(contains(&rows, "█"));
         assert!(contains(&rows, "60.0%"));
         assert!(contains(&rows, "target"));
-        assert!(contains(&rows, "+09:24"));
+        assert!(contains(&rows, "+09:42"));
         assert!(contains(&rows, "vacation 1"));
     }
 }

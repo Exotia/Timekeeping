@@ -22,6 +22,7 @@ pub const DEFAULT_TOML: &str = r##"# tk configuration — edit and restart tk
 start_date = "2026-01-01"          # balance is computed from this date
 initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
+break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
@@ -53,6 +54,8 @@ pub struct Config {
     #[serde(default)]
     pub initial_balance_minutes: i32,
     pub daily_target_minutes: i32,
+    #[serde(default = "default_break_gap")]
+    pub break_gap_minutes: u32,
     #[serde(default = "default_vacation")]
     pub vacation_days_per_year: u32,
     #[serde(default = "default_week_start")]
@@ -67,6 +70,9 @@ pub struct Config {
     pub theme_overrides: BTreeMap<String, String>,
 }
 
+fn default_break_gap() -> u32 {
+    30
+}
 fn default_vacation() -> u32 {
     30
 }
@@ -136,6 +142,7 @@ impl Config {
     pub fn rules(&self) -> Rules {
         Rules {
             daily_target: Minutes(self.daily_target_minutes),
+            break_gap: Minutes(self.break_gap_minutes as i32),
             tiers: self
                 .break_tiers
                 .iter()
@@ -283,6 +290,32 @@ mod tests {
         let bad = DEFAULT_TOML.replace("after_minutes = 360", "after_minutes = 100");
         match Config::from_toml(&bad) {
             Err(ConfigError::Validation { field, .. }) => assert_eq!(field, "break_tiers"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn break_gap_minutes_defaults_to_thirty_and_reaches_the_rules() {
+        let c = Config::from_toml(DEFAULT_TOML).unwrap();
+        assert_eq!(c.break_gap_minutes, 30);
+        assert_eq!(c.rules().break_gap, Minutes(30));
+        // The key may be left out of a hand-written file entirely.
+        let without: String = DEFAULT_TOML
+            .lines()
+            .filter(|l| !l.starts_with("break_gap_minutes"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(Config::from_toml(&without).unwrap().break_gap_minutes, 30);
+        // Zero is allowed and means "never deduct automatically".
+        let off = DEFAULT_TOML.replace("break_gap_minutes = 30", "break_gap_minutes = 0");
+        assert_eq!(
+            Config::from_toml(&off).unwrap().rules().break_gap,
+            Minutes::ZERO
+        );
+        // A negative value is not a duration.
+        let bad = DEFAULT_TOML.replace("break_gap_minutes = 30", "break_gap_minutes = -5");
+        match Config::from_toml(&bad) {
+            Err(ConfigError::Parse(_)) | Err(ConfigError::Validation { .. }) => {}
             other => panic!("{other:?}"),
         }
     }

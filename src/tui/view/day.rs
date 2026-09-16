@@ -250,6 +250,7 @@ mod tests {
         let rules = Rules {
             daily_target: Minutes(468),
             tiers: default_tiers(),
+            break_gap: Minutes(30),
             start_date: date,
             initial_balance: Minutes::ZERO,
         };
@@ -284,7 +285,8 @@ mod tests {
         assert!(contains(&rows, "Alpha"));
         assert!(rows.iter().any(|r| r.contains('▶') && r.contains("Beta")));
         assert!(contains(&rows, "gross +06:00"));
-        assert!(contains(&rows, "break -00:18"));
-        assert!(contains(&rows, "net +05:42"));
+        // 12:00–13:00 is a recorded break, so nothing is deducted on top of it.
+        assert!(contains(&rows, "break -00:00"));
+        assert!(contains(&rows, "net +06:00"));
     }
 }

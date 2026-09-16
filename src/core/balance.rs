@@ -1,13 +1,16 @@
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use super::{
-    BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, deduction, minutes_of,
+    BreakTier, CoreError, Day, DayKind, Entry, HolidayCalendar, Minutes, day_deduction,
+    gaps_between, minutes_of, recorded_gaps,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rules {
     pub daily_target: Minutes,
     pub tiers: Vec<BreakTier>,
+    /// A day whose recorded pauses reach this cancels its break deduction.
+    pub break_gap: Minutes,
     pub start_date: NaiveDate,
     pub initial_balance: Minutes,
 }
@@ -23,6 +26,8 @@ pub struct DayStats {
     pub date: NaiveDate,
     pub kind: DayKind,
     pub gross: Minutes,
+    /// The day's recorded pauses — what [`Rules::break_gap`] is measured against.
+    pub gaps: Minutes,
     pub deduction: Minutes,
     pub net: Minutes,
     pub target: Minutes,
@@ -49,8 +54,9 @@ pub fn effective_kind(stored: Option<&DayKind>, date: NaiveDate, cal: &HolidayCa
 
 pub fn day_stats(day: &Day, rules: &Rules, cal: &HolidayCalendar, ctx: &TodayCtx) -> DayStats {
     let gross: Minutes = day.entries.iter().map(Entry::duration).sum();
+    let gaps = recorded_gaps(&day.entries);
     let ded = if gross > Minutes::ZERO {
-        deduction(gross, &rules.tiers)
+        day_deduction(gross, gaps, &rules.tiers, rules.break_gap)
     } else {
         Minutes::ZERO
     };
@@ -74,6 +80,7 @@ pub fn day_stats(day: &Day, rules: &Rules, cal: &HolidayCalendar, ctx: &TodayCtx
         date: day.date,
         kind: day.kind.clone(),
         gross,
+        gaps,
         deduction: ded,
         net,
         target,
@@ -130,16 +137,31 @@ pub fn running_minutes(session_start: NaiveDateTime, now: NaiveDateTime) -> Minu
     Minutes((now - session_start).num_minutes().max(0) as i32)
 }
 
-/// Net for today if a session of `running` minutes were closed right now.
-pub fn provisional_net_with(entries: &[Entry], running: Minutes, rules: &Rules) -> Minutes {
+/// Net for today if a session of `running` minutes, opened at `running_since`,
+/// were closed right now.
+///
+/// The open session counts as one more entry, so the pause before it is a
+/// recorded break like any other: come back from a long lunch and the deduction
+/// is already gone while the clock is still running, instead of reappearing the
+/// moment the entry is written.
+pub fn provisional_net_for(
+    entries: &[Entry],
+    running_since: NaiveTime,
+    running: Minutes,
+    rules: &Rules,
+) -> Minutes {
     let gross = entries.iter().map(Entry::duration).sum::<Minutes>() + running;
-    Minutes((gross - deduction(gross, &rules.tiers)).0.max(0))
+    let mut ivs: Vec<(i32, i32)> = entries.iter().map(Entry::interval).collect();
+    let s = minutes_of(running_since);
+    ivs.push((s, s + running.0));
+    let ded = day_deduction(gross, gaps_between(&ivs), &rules.tiers, rules.break_gap);
+    Minutes((gross - ded).0.max(0))
 }
 
 /// Net for today if the running clock-in were closed right now.
 ///
 /// Same-day form kept for callers that only hold clock times; prefer
-/// [`provisional_net_with`] together with [`running_minutes`], which also handles a
+/// [`provisional_net_for`] together with [`running_minutes`], which also handles a
 /// session that started on an earlier date.
 pub fn provisional_net(
     entries: &[Entry],
@@ -153,7 +175,7 @@ pub fn provisional_net(
     } else {
         Minutes(e - s)
     };
-    provisional_net_with(entries, running, rules)
+    provisional_net_for(entries, running_since, running, rules)
 }
 
 #[cfg(test)]
@@ -172,6 +194,7 @@ mod tests {
         Rules {
             daily_target: Minutes(468),
             tiers: default_tiers(),
+            break_gap: Minutes(30),
             start_date: d(2026, 9, 1),
             initial_balance: Minutes(60),
         }
@@ -241,7 +264,7 @@ mod tests {
             d(2026, 9, 14),
             vec![
                 entry(1, d(2026, 9, 14), t(8, 0), t(11, 0)),
-                entry(2, d(2026, 9, 14), t(12, 0), t(15, 0)),
+                entry(2, d(2026, 9, 14), t(11, 0), t(14, 0)),
             ],
         );
         let s = day_stats(&day, &rules(), &cal(), &ctx(d(2026, 9, 15), false));
@@ -403,10 +426,11 @@ mod tests {
     fn provisional_net_includes_running_entry() {
         let today = d(2026, 9, 15);
         let ex = vec![entry(1, today, t(8, 0), t(12, 0))]; // 240
-        // running since 13:00, now 15:30 → +150 → gross 390 → deduct 48 → 342
+        // running since 13:00, now 15:30 → +150 → gross 390, and the hour of lunch
+        // before the clock-in is break enough for the day.
         assert_eq!(
             provisional_net(&ex, t(13, 0), t(15, 30), &rules()),
-            Minutes(342)
+            Minutes(390)
         );
     }
 
@@ -429,8 +453,103 @@ mod tests {
         // …and it feeds the provisional net unchanged.
         let ex = vec![entry(1, d(2026, 9, 14), t(8, 0), t(12, 0))]; // 240
         assert_eq!(
-            provisional_net_with(&ex, running_minutes(start, now), &rules()),
-            Minutes(240 + 120 - 18) // 6:00 gross sits on the first tier, not past it
+            provisional_net_for(&ex, t(23, 0), running_minutes(start, now), &rules()),
+            Minutes(240 + 120) // the whole afternoon off is break enough
+        );
+    }
+
+    #[test]
+    fn a_recorded_break_cancels_the_deduction() {
+        let day = d(2026, 9, 14);
+        let mk = |entries| {
+            day_stats(
+                &work(day, entries),
+                &rules(),
+                &cal(),
+                &ctx(d(2026, 9, 15), false),
+            )
+        };
+        // Seamless: a project switch at noon is not a break.
+        let s = mk(vec![
+            entry(1, day, t(8, 0), t(12, 0)),
+            entry(2, day, t(12, 0), t(17, 0)),
+        ]);
+        assert_eq!(s.gaps, Minutes::ZERO);
+        assert_eq!(s.deduction, Minutes(48));
+        assert_eq!(s.net, Minutes(492)); // 8:12
+        // A 45-minute pause: the user took a real break, nothing is deducted.
+        let s = mk(vec![
+            entry(1, day, t(8, 0), t(12, 0)),
+            entry(2, day, t(12, 45), t(17, 0)),
+        ]);
+        assert_eq!(s.gaps, Minutes(45));
+        assert_eq!(s.deduction, Minutes::ZERO);
+        assert_eq!(s.net, Minutes(495)); // 8:15
+        // A 20-minute pause is below the threshold: the full tier applies.
+        let s = mk(vec![
+            entry(1, day, t(8, 0), t(12, 0)),
+            entry(2, day, t(12, 20), t(17, 0)),
+        ]);
+        assert_eq!(s.gaps, Minutes(20));
+        assert_eq!(s.deduction, Minutes(48));
+        assert_eq!(s.net, Minutes(472)); // 7:52
+        // Two short pauses reaching the threshold together also cancel it.
+        let s = mk(vec![
+            entry(1, day, t(8, 0), t(11, 0)),
+            entry(2, day, t(11, 15), t(13, 0)),
+            entry(3, day, t(13, 15), t(17, 0)),
+        ]);
+        assert_eq!(s.gaps, Minutes(30));
+        assert_eq!(s.deduction, Minutes::ZERO);
+        // One entry has no pause to record, so it keeps its deduction.
+        let s = mk(vec![entry(1, day, t(8, 0), t(17, 0))]);
+        assert_eq!(s.gaps, Minutes::ZERO);
+        assert_eq!(s.deduction, Minutes(48));
+        // Overlapping entries do not fabricate a negative pause.
+        let s = mk(vec![
+            entry(1, day, t(8, 0), t(12, 0)),
+            entry(2, day, t(11, 0), t(17, 0)),
+        ]);
+        assert_eq!(s.gaps, Minutes::ZERO);
+        assert_eq!(s.deduction, Minutes(48));
+    }
+
+    #[test]
+    fn a_break_gap_of_zero_never_deducts() {
+        let day = d(2026, 9, 14);
+        let r = Rules {
+            break_gap: Minutes::ZERO,
+            ..rules()
+        };
+        let s = day_stats(
+            &work(day, vec![entry(1, day, t(8, 0), t(17, 0))]),
+            &r,
+            &cal(),
+            &ctx(d(2026, 9, 15), false),
+        );
+        assert_eq!(s.deduction, Minutes::ZERO);
+        assert_eq!(s.net, Minutes(540));
+    }
+
+    #[test]
+    fn the_running_session_closes_a_gap_of_its_own() {
+        let today = d(2026, 9, 15);
+        let ex = vec![entry(1, today, t(8, 0), t(12, 0))]; // 240
+        // Back at 12:45 after a 45-minute lunch, now 17:00: 240 + 255 = 495 gross,
+        // and the lunch has already paid for the break.
+        assert_eq!(
+            provisional_net_for(&ex, t(12, 45), Minutes(255), &rules()),
+            Minutes(495)
+        );
+        // Straight back at 12:00: no pause, so the tier still applies.
+        assert_eq!(
+            provisional_net_for(&ex, t(12, 0), Minutes(300), &rules()),
+            Minutes(540 - 48)
+        );
+        // A session still on its first minute is no interval at all.
+        assert_eq!(
+            provisional_net_for(&ex, t(12, 0), Minutes::ZERO, &rules()),
+            Minutes(240 - 18)
         );
     }
 }

@@ -61,6 +61,7 @@ file written on first run, verbatim:
 start_date = "2026-01-01"          # balance is computed from this date
 initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
+break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
@@ -83,6 +84,7 @@ deduct_minutes = 48
 | `start_date` | *required* | `YYYY-MM-DD`; the balance sums every day from here to today. Days before it are ignored. |
 | `initial_balance_minutes` | `0` | Balance you already carried on `start_date`. Negative values are allowed. |
 | `daily_target_minutes` | *required* | Target for one working day; must be greater than 0. `468` is 7:48. |
+| `break_gap_minutes` | `30` | A day whose recorded pauses add up to at least this many minutes keeps its full gross: the automatic break deduction is skipped. `0` switches the automatic deduction off entirely. |
 | `vacation_days_per_year` | `30` | Allowance shown in the title bar and on the statistics screen; remaining = allowance − vacation working days taken in the calendar year. No carry-over. |
 | `week_starts_on` | `"monday"` | `"monday"` or `"sunday"`. Accepted and validated, but it has no effect yet: week rows are grouped by ISO week number, which always begins on Monday. |
 | `theme` | `"dark"` | `"dark"`, `"light"` or `"purple"` (deep purple ground, vivid green/red balances). |
@@ -105,11 +107,17 @@ tk config --target 8:00 --vacation 28       # change two of them
 tk config --start 2026-01-01 --balance -2:30
 ```
 
-**How break tiers apply.** For a day's gross time, `tk` picks the tier with the
-largest `after_minutes` that is *strictly below* the gross, and subtracts that
-tier's `deduct_minutes`. With the defaults, 3:00 gross loses nothing, 3:01
+**How breaks apply.** A pause you recorded yourself counts. If the gaps
+between a day's entries add up to at least `break_gap_minutes` (30 by default),
+nothing is deducted that day — you took a real break. Otherwise, either because
+the entries run seamlessly (a project switch at noon is not a break) or because
+the gaps are too short, the tier table applies: `tk` picks the tier with the
+largest `after_minutes` that is *strictly below* the day's gross and subtracts
+that tier's `deduct_minutes`. With the defaults, 3:00 gross loses nothing, 3:01
 loses 18 minutes, and anything over 6:00 loses 48 minutes. A day with no
-entries never gets a deduction.
+entries never gets a deduction. While you are clocked in, the running session
+counts as an entry too, so the lunch you just came back from already cancels
+the deduction in `tk status`.
 
 **Theme overrides.** Keys inside `[theme_overrides]` are role names; values are
 `"#rrggbb"` or a named terminal color. Recognised roles: `positive`,

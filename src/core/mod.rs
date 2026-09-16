@@ -10,9 +10,9 @@ pub mod types;
 
 pub use balance::{
     DayStats, Rules, TodayCtx, check_overlap, day_stats, effective_kind, is_working_day,
-    provisional_net, provisional_net_with, running_balance, running_minutes,
+    provisional_net, provisional_net_for, running_balance, running_minutes,
 };
-pub use breaks::{BreakTier, deduction, default_tiers};
+pub use breaks::{BreakTier, day_deduction, deduction, default_tiers, gaps_between, recorded_gaps};
 pub use error::CoreError;
 pub use holidays::{HolidayCalendar, easter_sunday, saxony_holidays};
 pub use minutes::Minutes;

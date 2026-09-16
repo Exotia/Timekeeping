@@ -960,6 +960,7 @@ pub mod testing {
             rules: Rules {
                 daily_target: crate::core::Minutes(468),
                 tiers: crate::core::default_tiers(),
+                break_gap: crate::core::Minutes(30),
                 start_date: today,
                 initial_balance: crate::core::Minutes::ZERO,
             },

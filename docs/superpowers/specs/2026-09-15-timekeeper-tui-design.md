@@ -140,10 +140,19 @@ carry a target and never show as missing.
 **Gross.** Sum of entry durations for the day. An entry whose `end <= start`
 wraps to the next day (duration = end + 24h − start).
 
-**Break deduction.** `break_tiers` is a list of `{after_minutes, deduct_minutes}`
-sorted ascending. The deduction is `deduct_minutes` of the last tier whose
-`after_minutes < gross`, else 0. Applied once per day on the daily gross, not
-per entry. Default tiers: over 180 → 18, over 360 → 48.
+**Break deduction.** If the entries of a day contain recorded breaks (gaps
+between consecutive entries) totalling at least `break_gap_minutes` (config,
+default 30), no automatic break deduction is applied that day: the user took a
+real break. Otherwise — the entries run seamlessly, e.g. after a project
+switch, or the gaps are shorter than the threshold — the full tier deduction
+for the day's gross applies. `break_tiers` is a list of
+`{after_minutes, deduct_minutes}` sorted ascending; the tier deduction is
+`deduct_minutes` of the last tier whose `after_minutes < gross`, else 0.
+Applied once per day on the daily gross, not per entry. Default tiers: over
+180 → 18, over 360 → 48. A `break_gap_minutes` of 0 switches the automatic
+deduction off altogether, because a day without a single pause still satisfies
+`gaps >= break_gap_minutes`. While the user is clocked in, the running session
+counts as one more entry, so the pause before it already cancels the deduction.
 
 **Net.** `gross − deduction`, never negative.
 
@@ -238,6 +247,7 @@ day to `Work`.
 start_date = "2026-01-01"          # balance is computed from this date
 initial_balance_minutes = 0        # carried-over balance at start_date
 daily_target_minutes = 468         # 7:48
+break_gap_minutes = 30             # a recorded pause of at least this long cancels the deduction
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light"
@@ -256,8 +266,8 @@ deduct_minutes = 48
 ```
 
 Validation at load: tiers ascending and non-negative, target > 0,
-start_date parses, theme value known. A validation error prints the field
-and line and exits 2.
+`break_gap_minutes` non-negative, start_date parses, theme value known. A
+validation error prints the field and line and exits 2.
 
 ## 7. Application architecture
 

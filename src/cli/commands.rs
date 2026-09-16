@@ -6,7 +6,7 @@ use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 use super::{Command, Ctx, ProjectAction};
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    DayKind, Minutes, TodayCtx, day_stats, parse_date, parse_time_range, provisional_net_with,
+    DayKind, Minutes, TodayCtx, day_stats, parse_date, parse_time_range, provisional_net_for,
     running_balance, running_minutes,
 };
 
@@ -37,7 +37,7 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
             // The session carries its own date, so a clock-in from yesterday keeps
             // counting instead of wrapping back to 00:00 at midnight.
             let running = running_minutes(NaiveDateTime::new(s.date, s.start), now);
-            let net = provisional_net_with(&entries, running, &rules);
+            let net = provisional_net_for(&entries, s.start, running, &rules);
             // A session recorded before `tk` stored the project simply has none to name.
             let project = s
                 .project
