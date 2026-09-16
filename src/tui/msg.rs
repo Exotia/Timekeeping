@@ -93,6 +93,10 @@ pub enum Msg {
     SettingsCancel,
     // stats
     StatsRange(RangeKind),
+    /// `[` / `]`: move the statistics anchor by N whole periods of the range.
+    StatsShift(i32),
+    /// `t`: bring the statistics anchor back to today.
+    StatsToday,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +109,9 @@ pub enum StoreCmd {
     LoadStats {
         from: NaiveDate,
         to: NaiveDate,
+        /// The calendar year of the anchor, for the vacation budget: the
+        /// allowance is a yearly one, so a range in 2025 must count 2025.
+        year: i32,
     },
     AddEntry {
         date: NaiveDate,
@@ -162,8 +169,9 @@ pub struct StatsData {
     pub to: NaiveDate,
     pub days: Vec<Day>,
     pub projects: Vec<Project>,
-    /// Vacation working days taken in the whole calendar year of today — the
-    /// allowance is a yearly budget, so the remainder must not follow the range.
+    /// Vacation working days taken in the whole calendar year the range sits in
+    /// — the allowance is a yearly budget, so the remainder must not follow the
+    /// range itself, only the year it belongs to.
     pub vacation_used_year: u32,
     /// Whether a clock-in is open right now, for today's target rule.
     pub session_active: bool,

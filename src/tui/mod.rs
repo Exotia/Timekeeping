@@ -128,6 +128,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         settings: None,
         clock_picker: None,
         hours,
+        stats_anchor: now.date(),
     };
     model.load_month();
 

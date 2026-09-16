@@ -321,12 +321,22 @@ restart.
 | Key | Action |
 | --- | --- |
 | `1` | Week (Monday … Sunday) |
-| `2` | Month |
-| `3` | Quarter |
-| `4` | Year |
+| `2` | Calendar month |
+| `3` | Calendar quarter |
+| `4` | Calendar year |
+| `[` / `PageUp`, `]` / `PageDown` | Previous / next period of that length |
+| `t` | Back to the period today falls in |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |
+
+The four range keys pick a period *length*; `[` and `]` then walk through
+periods of it — a month back, a quarter back, last year — and `t` returns to
+the one today falls in. The dates on the range line, in `‹ … ›`, say which
+period is on screen; switching the length keeps where you have walked to, so
+`[` on a month followed by `1` shows that week of the previous month. The
+screen always opens on today's period, and the vacation line follows the year
+you are looking at, not this one.
 
 Under the range selector sits the overtime chart: one bar per day for a week,
 per ISO week for a month, per month for a quarter or a year. Bars grow to the
@@ -336,8 +346,9 @@ worst period. A second line under it carries `net`, `target` and `balance` for
 the range: a target and a balance are about your days, not about your projects,
 so they are only ever shown next to the chart they move. Days before
 `start_date` are left out, the same as everywhere else the balance is counted.
-A terminal too short for every bar shows the most recent ones, ending at the
-period today falls in, and marks the cut with a `…` in the panel title.
+A terminal too short for every bar shows the bars around where you are looking
+— ending at the period today falls in, or at the one you have walked to — and
+marks the cut with a `…` in the panel title.
 
 The panel below it is about work alone: one bar per project with its hours and
 its share of the range, and `net` — the net time in the range — under them. The

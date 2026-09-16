@@ -22,6 +22,9 @@ impl AppComponent<Msg, UserEvent> for StatsScreen {
             Key::Char('2') => Msg::StatsRange(RangeKind::Month),
             Key::Char('3') => Msg::StatsRange(RangeKind::Quarter),
             Key::Char('4') => Msg::StatsRange(RangeKind::Year),
+            Key::Char('[') | Key::PageUp => Msg::StatsShift(-1),
+            Key::Char(']') | Key::PageDown => Msg::StatsShift(1),
+            Key::Char('t') => Msg::StatsToday,
             Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Esc | Key::Char('q') => Msg::Back,
@@ -52,5 +55,16 @@ mod tests {
         assert_eq!(press(&mut c, '4'), Some(Msg::StatsRange(RangeKind::Year)));
         assert_eq!(press(&mut c, '5'), None);
         assert_eq!(press(&mut c, 'u'), Some(Msg::ToggleHours));
+    }
+
+    #[test]
+    fn brackets_and_t_walk_through_periods() {
+        let mut c = StatsScreen::default();
+        let mut key = |code| c.on(&Event::Keyboard(KeyEvent::new(code, KeyModifiers::NONE)));
+        assert_eq!(key(Key::Char('[')), Some(Msg::StatsShift(-1)));
+        assert_eq!(key(Key::Char(']')), Some(Msg::StatsShift(1)));
+        assert_eq!(key(Key::PageUp), Some(Msg::StatsShift(-1)));
+        assert_eq!(key(Key::PageDown), Some(Msg::StatsShift(1)));
+        assert_eq!(key(Key::Char('t')), Some(Msg::StatsToday));
     }
 }

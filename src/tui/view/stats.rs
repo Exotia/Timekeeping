@@ -46,9 +46,10 @@ pub struct StatsView {
     /// is the same thing whenever the chart is not cut short.
     pub best: Option<usize>,
     pub worst: Option<usize>,
-    /// Today, so a chart that cannot show every bucket can end at the one the
-    /// user is living in rather than in an empty future.
-    pub today: NaiveDate,
+    /// The last bucket a cut-short chart may end at: today, or the anchor when
+    /// the reader has navigated back past it. Either way the chart ends in a
+    /// period that has happened rather than in an empty future.
+    pub cut_at: NaiveDate,
 }
 
 /// The (from, to) date range of the `kind` period that contains `anchor`.
@@ -210,11 +211,13 @@ pub fn best_worst(buckets: &[Bucket]) -> (Option<usize>, Option<usize>) {
 }
 
 /// Aggregate raw store data into the view model the screen draws from.
+#[allow(clippy::too_many_arguments)]
 pub fn build_stats(
     data: &StatsData,
     rules: &Rules,
     cal: &HolidayCalendar,
     today: NaiveDate,
+    anchor: NaiveDate,
     allowance: u32,
     kind: RangeKind,
 ) -> StatsView {
@@ -243,7 +246,7 @@ pub fn build_stats(
         balance_total: Minutes::ZERO,
         best: None,
         worst: None,
-        today,
+        cut_at: anchor.min(today),
     };
     for day in &data.days {
         let s = day_stats(day, rules, cal, &ctx);
@@ -317,6 +320,7 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
         &m.rules,
         &m.cal,
         m.today,
+        m.stats_anchor,
         m.vacation_allowance,
         m.stats_range,
     );
@@ -359,8 +363,9 @@ fn bar_len(span: usize, value: i32, max: i32) -> usize {
 }
 
 /// The slice of buckets a panel `rows` tall can show: the most recent ones,
-/// ending at the bucket today falls in so that a year seen in September does not
-/// scroll away into three empty winter months.
+/// ending at the bucket [`StatsView::cut_at`] falls in so that a year seen in
+/// September does not scroll away into three empty winter months, and a year
+/// walked back to March ends there instead.
 fn visible_buckets(v: &StatsView, rows: usize) -> &[Bucket] {
     if rows >= v.buckets.len() {
         return &v.buckets;
@@ -368,7 +373,7 @@ fn visible_buckets(v: &StatsView, rows: usize) -> &[Bucket] {
     let end = v
         .buckets
         .iter()
-        .rposition(|b| b.from <= v.today)
+        .rposition(|b| b.from <= v.cut_at)
         .map_or(v.buckets.len(), |i| i + 1)
         .max(rows);
     &v.buckets[end - rows..end]
@@ -493,7 +498,8 @@ pub fn draw_stats(
         (RangeKind::Quarter, "3", "quarter"),
         (RangeKind::Year, "4", "year"),
     ];
-    let dates = format!("{} → {}", v.from, v.to);
+    // The guillemets are the hint that the period itself moves: `[` and `]`.
+    let dates = format!("‹ {} → {} ›", v.from, v.to);
     // A narrow terminal cannot have both the airy gaps and the dates, and the
     // dates are the part worth keeping.
     let roomy: usize = entries
@@ -686,6 +692,10 @@ mod tests {
         // A quarter back from November is the third quarter of the year, and a
         // quarter on from November is the first of the next.
         assert_eq!(
+            shift_anchor(RangeKind::Quarter, d(2026, 11, 20), 1),
+            d(2027, 2, 20)
+        );
+        assert_eq!(
             range_for(
                 RangeKind::Quarter,
                 shift_anchor(RangeKind::Quarter, d(2026, 11, 20), 1)
@@ -869,13 +879,21 @@ mod tests {
     }
 
     fn view(kind: RangeKind, days: Vec<Day>) -> StatsView {
-        let today = d(2026, 9, 15);
-        let (from, to) = range_for(kind, today);
+        view_at(kind, d(2026, 9, 15), days)
+    }
+
+    /// The screen as it looks with the anchor walked to `anchor`, today being
+    /// 15 September 2026 all the same.
+    fn view_at(kind: RangeKind, anchor: NaiveDate, days: Vec<Day>) -> StatsView {
+        let (from, to) = range_for(kind, anchor);
+        let mut r = rules();
+        r.start_date = d(2020, 1, 1);
         build_stats(
             &stats_data(from, to, days),
-            &rules(),
+            &r,
             &HolidayCalendar::default(),
-            today,
+            d(2026, 9, 15),
+            anchor,
             30,
             kind,
         )
@@ -922,6 +940,7 @@ mod tests {
             &stats_data(from, to, days),
             &r,
             &HolidayCalendar::default(),
+            d(2026, 9, 15),
             d(2026, 9, 15),
             30,
             RangeKind::Month,
@@ -1032,6 +1051,68 @@ mod tests {
         assert!(rows.iter().all(|r| r.chars().count() <= 20));
     }
 
+    /// The chart window ends at the period the anchor is in: walked back into
+    /// last year, the reader sees the months around where they navigated to and
+    /// not the end of that year.
+    #[test]
+    fn the_chart_window_follows_the_anchor() {
+        let v = view_at(RangeKind::Year, d(2025, 3, 10), vec![]);
+        assert_eq!(v.cut_at, d(2025, 3, 10));
+        let rows = render(80, 21, |f| {
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::Year,
+                HoursFormat::Hm,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "Mar"), "{joined}");
+        assert!(
+            !contains(&rows, "Dec "),
+            "the window must not run past the anchor:\n{joined}"
+        );
+        // A range in the future has no bucket to end at, so it shows its last
+        // ones rather than an empty January.
+        let ahead = view_at(RangeKind::Year, d(2027, 3, 10), vec![]);
+        assert_eq!(ahead.cut_at, d(2026, 9, 15));
+        let rows = render(80, 21, |f| {
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &ahead,
+                RangeKind::Year,
+                HoursFormat::Hm,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "Dec "), "{joined}");
+    }
+
+    /// The range line carries the dates of the period on screen, in the guillemets
+    /// that hint at `[` and `]`.
+    #[test]
+    fn the_range_line_shows_the_shifted_period() {
+        let v = view_at(RangeKind::Month, d(2026, 8, 15), vec![]);
+        assert_eq!((v.from, v.to), (d(2026, 8, 1), d(2026, 8, 31)));
+        let rows = render(80, 21, |f| {
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::Month,
+                HoursFormat::Hm,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "‹ 2026-08-01 → 2026-08-31 ›"), "{joined}");
+        assert!(rows.iter().all(|r| r.chars().count() <= 80), "{joined}");
+    }
+
     #[test]
     fn the_range_line_keeps_its_dates_at_eighty_columns() {
         let v = view(RangeKind::Year, vec![]);
@@ -1048,7 +1129,7 @@ mod tests {
             });
             let joined = rows.join("\n");
             assert!(
-                contains(&rows, "2026-01-01 → 2026-12-31"),
+                contains(&rows, "‹ 2026-01-01 → 2026-12-31 ›"),
                 "the range is cut at {w} columns:\n{joined}"
             );
             assert!(contains(&rows, "[1] week"), "{joined}");
@@ -1229,6 +1310,7 @@ mod tests {
             &data,
             &rules,
             &HolidayCalendar::default(),
+            d(2026, 9, 15),
             d(2026, 9, 15),
             30,
             RangeKind::Month,

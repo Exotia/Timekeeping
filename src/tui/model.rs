@@ -63,6 +63,10 @@ pub struct Model {
     /// How every duration on screen is spelled; `u` flips it and writes it back
     /// to `config.toml`.
     pub hours: HoursFormat,
+    /// The date the statistics range is measured around: the screen shows the
+    /// `stats_range` period this day falls in. `[` and `]` move it by whole
+    /// periods, `t` brings it back to today.
+    pub stats_anchor: NaiveDate,
 }
 
 /// State of the open clock-in overlay: whether submitting it switches the running
@@ -204,8 +208,12 @@ impl Model {
     }
 
     fn load_stats(&mut self) {
-        let (from, to) = super::view::stats::range_for(self.stats_range, self.today);
-        self.send(StoreCmd::LoadStats { from, to });
+        let (from, to) = super::view::stats::range_for(self.stats_range, self.stats_anchor);
+        self.send(StoreCmd::LoadStats {
+            from,
+            to,
+            year: self.stats_anchor.year(),
+        });
     }
 
     pub fn focus(&mut self, id: Id) {
@@ -622,11 +630,27 @@ impl Model {
             Msg::OpenStats => {
                 self.screen = Screen::Stats;
                 self.stats = None;
+                // The screen always opens on the period being lived in, however
+                // far the last visit had walked away from it.
+                self.stats_anchor = self.today;
                 self.focus(Id::Stats);
                 self.load_stats();
             }
             Msg::StatsRange(r) => {
+                // The anchor stays put: switching from the week of 15 August to
+                // the month shows August, not this month.
                 self.stats_range = r;
+                self.stats = None;
+                self.load_stats();
+            }
+            Msg::StatsShift(n) => {
+                self.stats_anchor =
+                    super::view::stats::shift_anchor(self.stats_range, self.stats_anchor, n);
+                self.stats = None;
+                self.load_stats();
+            }
+            Msg::StatsToday => {
+                self.stats_anchor = self.today;
                 self.stats = None;
                 self.load_stats();
             }
@@ -873,10 +897,9 @@ impl Model {
                 ("Esc", "back"),
             ],
             Screen::Stats => &[
-                ("1", "week"),
-                ("2", "month"),
-                ("3", "quarter"),
-                ("4", "year"),
+                ("1-4", "range"),
+                ("[ ]", "shift"),
+                ("t", "today"),
                 ("u", "units"),
                 ("Esc", "back"),
             ],
@@ -938,10 +961,13 @@ impl Model {
                 ("Esc", "back"),
             ],
             Screen::Stats => &[
-                ("1", "this week"),
-                ("2", "this month"),
-                ("3", "this quarter"),
-                ("4", "this year"),
+                ("1", "week (Monday … Sunday)"),
+                ("2", "calendar month"),
+                ("3", "calendar quarter"),
+                ("4", "calendar year"),
+                ("[ ]", "previous / next period"),
+                ("PgUp PgDn", "previous / next period"),
+                ("t", "back to today"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
             ],
@@ -1019,6 +1045,7 @@ pub mod testing {
             settings: None,
             clock_picker: None,
             hours: HoursFormat::Hm,
+            stats_anchor: today,
         };
         (m, rx)
     }
@@ -1304,6 +1331,84 @@ mod tests {
         assert_eq!(m.selected, today);
         m.update(Msg::SelectDay(1));
         assert_eq!(m.selected, d(2026, 2, 1));
+    }
+
+    /// The statistics hints name every key the screen has, inside 80 columns.
+    #[test]
+    fn the_statistics_hints_name_the_navigation_keys() {
+        let (mut m, _rx) = model(d(2026, 9, 15));
+        m.screen = Screen::Stats;
+        let hints = m.key_hints();
+        for pair in [
+            ("1-4", "range"),
+            ("[ ]", "shift"),
+            ("t", "today"),
+            ("u", "units"),
+            ("Esc", "back"),
+        ] {
+            assert!(hints.contains(&pair), "{pair:?} missing from {hints:?}");
+        }
+        // The whole set fits the minimum terminal, so nothing has to be trimmed.
+        assert_eq!(m.key_hints_for(80), hints);
+        let help = m.help_keys();
+        for key in ["[ ]", "t"] {
+            assert!(
+                help.iter().any(|(k, _)| *k == key),
+                "{key} missing from the help"
+            );
+        }
+    }
+
+    /// `[`, `]` and `t` walk the statistics screen through whole periods, and the
+    /// range that is loaded is always the one the anchor falls in.
+    #[test]
+    fn statistics_walk_through_periods() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let loaded = |rx: &std::sync::mpsc::Receiver<StoreCmd>| match rx.try_recv().unwrap() {
+            StoreCmd::LoadStats { from, to, year } => (from, to, year),
+            other => panic!("expected LoadStats, got {other:?}"),
+        };
+        m.update(Msg::OpenStats);
+        assert_eq!(m.stats_anchor, today);
+        assert_eq!(loaded(&rx), (d(2026, 9, 1), d(2026, 9, 30), 2026));
+
+        // One month back: the previous calendar month, not a window of 30 days.
+        m.update(Msg::StatsShift(-1));
+        assert_eq!(m.stats_anchor, d(2026, 8, 15));
+        assert_eq!(loaded(&rx), (d(2026, 8, 1), d(2026, 8, 31), 2026));
+
+        // Switching the range keeps where the user has navigated to: Saturday
+        // 15 August sits in the week Mon 10 … Sun 16.
+        m.update(Msg::StatsRange(RangeKind::Week));
+        assert_eq!(m.stats_anchor, d(2026, 8, 15));
+        assert_eq!(loaded(&rx), (d(2026, 8, 10), d(2026, 8, 16), 2026));
+
+        // Two weeks on is fourteen days on.
+        m.update(Msg::StatsShift(1));
+        m.update(Msg::StatsShift(1));
+        assert_eq!(m.stats_anchor, d(2026, 8, 29));
+        let _ = loaded(&rx);
+        assert_eq!(loaded(&rx), (d(2026, 8, 24), d(2026, 8, 30), 2026));
+
+        // `t` comes back to the period today falls in.
+        m.update(Msg::StatsToday);
+        assert_eq!(m.stats_anchor, today);
+        assert_eq!(loaded(&rx), (d(2026, 9, 14), d(2026, 9, 20), 2026));
+
+        // A year back asks for that year's vacation, so the allowance line is
+        // about the year on screen.
+        m.update(Msg::StatsRange(RangeKind::Year));
+        assert_eq!(loaded(&rx), (d(2026, 1, 1), d(2026, 12, 31), 2026));
+        m.update(Msg::StatsShift(-1));
+        assert_eq!(loaded(&rx), (d(2025, 1, 1), d(2025, 12, 31), 2025));
+
+        // Re-opening the screen starts at today again.
+        m.update(Msg::Back);
+        let _ = rx.try_recv();
+        m.update(Msg::OpenStats);
+        assert_eq!(m.stats_anchor, today);
+        assert_eq!(loaded(&rx), (d(2026, 1, 1), d(2026, 12, 31), 2026));
     }
 
     #[test]

@@ -139,14 +139,15 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 .remove(0),
             projects: ctx.store.list_projects(false)?,
         }),
-        StoreCmd::LoadStats { from, to } => StoreReply::Stats(StatsData {
+        StoreCmd::LoadStats { from, to, year } => StoreReply::Stats(StatsData {
             from,
             to,
             days: ctx.store.days_in(from, to, &ctx.config.calendar())?,
             projects: ctx.store.list_projects(true)?,
             // The allowance is a calendar-year budget, so what is left of it never
-            // depends on the range the user happens to be looking at.
-            vacation_used_year: vacation_working_days_in_year(ctx, today.year())?,
+            // depends on the range inside the year the user is looking at — but it
+            // does follow the year they navigate to.
+            vacation_used_year: vacation_working_days_in_year(ctx, year)?,
             session_active: ctx.store.session()?.is_some(),
         }),
         StoreCmd::AddEntry {

@@ -297,7 +297,109 @@ fn stats_screen_80x24_year() {
         "a panel lost its top border:\n{joined}"
     );
     assert!(
-        out.iter().any(|r| r.contains("4 year")),
+        out.iter()
+            .any(|r| r.contains("1-4 range") && r.contains("[ ] shift")),
         "stats key hints missing:\n{joined}"
+    );
+}
+
+/// The statistics screen after one `[`: the month before the one today sits in,
+/// loaded and drawn through the model's own keys.
+#[test]
+fn stats_screen_80x24_shifted_month() {
+    let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+    let (mut m, rx) = model(today);
+    m.rules.start_date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    m.update(tk::tui::msg::Msg::OpenStats);
+    m.update(tk::tui::msg::Msg::StatsShift(-1));
+    let (from, to) = match rx.try_iter().last().expect("a stats load") {
+        tk::tui::msg::StoreCmd::LoadStats { from, to, year } => {
+            assert_eq!(year, 2026);
+            (from, to)
+        }
+        other => panic!("expected LoadStats, got {other:?}"),
+    };
+    assert_eq!(
+        (from, to),
+        (
+            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 31).unwrap()
+        )
+    );
+    let t = |h| chrono::NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+    let day = |dd, entries| Day {
+        date: NaiveDate::from_ymd_opt(2026, 8, dd).unwrap(),
+        kind: DayKind::Work,
+        entries,
+    };
+    let days = vec![
+        day(
+            3,
+            vec![Entry {
+                id: 1,
+                date: NaiveDate::from_ymd_opt(2026, 8, 3).unwrap(),
+                start: t(8),
+                end: t(17),
+                project: "Alpha".into(),
+                comment: String::new(),
+            }],
+        ),
+        // A Tuesday nobody booked: the whole target is missing, so that week's
+        // bar grows the other way.
+        day(11, vec![]),
+    ];
+    m.stats = Some(tk::tui::msg::StatsData {
+        from,
+        to,
+        days,
+        projects: vec![],
+        vacation_used_year: 3,
+        session_active: false,
+    });
+    let out = rows(80, 24, |f| m.draw(f));
+    let joined = out.join("\n");
+    assert!(
+        out.iter().all(|r| r.chars().count() <= 80),
+        "a row overflows 80 columns:\n{joined}"
+    );
+    // The range line says which month is on screen, in the navigation glyphs.
+    assert!(
+        out.iter()
+            .any(|r| r.contains("‹ 2026-08-01 → 2026-08-31 ›")),
+        "the shifted range is missing:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("[2] month")),
+        "range selector missing:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("Balance per week")),
+        "chart panel missing:\n{joined}"
+    );
+    // Too short for all five weeks of August, the chart ends at the week the
+    // anchor sits in — the 15th, carried back from today — and says it is cut.
+    assert!(
+        out.iter().any(|r| r.contains("… Balance per week")),
+        "the cut marker is missing:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("KW 33")),
+        "the week of the anchor missing:\n{joined}"
+    );
+    // Only the title bar, which follows the month view's selection, still names
+    // September: the statistics panels are all about August.
+    assert!(
+        !out.iter().skip(1).any(|r| r.contains("2026-09")),
+        "a September date leaked into the shifted screen:\n{joined}"
+    );
+    assert!(
+        out.iter()
+            .any(|r| r.contains("1-4 range") && r.contains("[ ] shift")),
+        "stats key hints missing:\n{joined}"
+    );
+    assert_eq!(
+        out.iter().filter(|r| r.starts_with('╭')).count(),
+        4,
+        "a panel lost its top border:\n{joined}"
     );
 }
