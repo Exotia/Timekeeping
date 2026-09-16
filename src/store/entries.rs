@@ -15,6 +15,7 @@ fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         end: time_from_min(r.get(3)?)?,
         project: r.get(4)?,
         comment: r.get(5)?,
+        break_share: None,
     })
 }
 

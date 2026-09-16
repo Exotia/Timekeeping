@@ -219,6 +219,7 @@ mod tests {
             end: e,
             project: "Alpha".into(),
             comment: String::new(),
+            break_share: None,
         }
     }
     fn work(date: NaiveDate, entries: Vec<Entry>) -> Day {
@@ -546,14 +547,14 @@ mod tests {
                 &ctx(d(2026, 9, 15), false),
             )
         };
-        // A seamless switch at noon: the nine-hour session loses 48 minutes,
-        // 21 of them off the four-hour morning and 27 off the five-hour
-        // afternoon — 3:39 and 4:33, and 8:12 together.
+        // A seamless switch at noon: the nine-hour session loses 48 minutes, and
+        // with nobody having assigned a share they fall on the project worked
+        // last — 4:00 and 4:12, and 8:12 together.
         let s = mk(vec![
             entry(1, day, t(8, 0), t(12, 0)),
             entry(2, day, t(12, 0), t(17, 0)),
         ]);
-        assert_eq!(s.entry_nets, vec![Minutes(219), Minutes(273)]);
+        assert_eq!(s.entry_nets, vec![Minutes(240), Minutes(252)]);
         assert_eq!(s.net, Minutes(492));
         // Every shape of day: a real pause, three sessions, one entry, one over
         // midnight. Whatever the sessions are, the shares add up to the net and

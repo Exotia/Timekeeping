@@ -126,15 +126,26 @@ running session counts too, so `tk status` shows the same figures the day will
 have once you clock out.
 
 **Project time is net time.** A session's deduction belongs to the session, not
-to any one entry of it, so it is shared out over that session's entries in
-proportion to their gross length, rounded to whole minutes so the shares add up
-to the deduction exactly. An entry's net is its gross minus its share. With the
-defaults, 08:00–12:00 on Alpha plus 12:00–17:00 on Beta is one nine-hour session
-losing 48 minutes: 21 of them come off Alpha's four hours and 27 off Beta's
-five, so Alpha nets 3:39, Beta 4:33 and the day 8:12. Every project figure `tk`
-shows — the month summary, the statistics panel, the day editor and the export —
-is net time, so the hours on your projects add up to the hours on your balance
-and a pause is never booked on a project.
+to any one entry of it, so one of them has to carry it. By default that is the
+project you were working on when the clock stopped: the whole break falls on the
+**last** entry of the session, spilling back onto the one before it if it is too
+short to take it all. With the defaults, 08:00–12:00 on Alpha plus 12:00–17:00
+on Beta is one nine-hour session losing 48 minutes, all of them off Beta: Alpha
+nets 4:00, Beta 4:12 and the day 8:12.
+
+You can say otherwise. Every entry can be given an explicit **break share** (in
+the TUI: `b` on the day editor, or the box that opens by itself after a
+multi-project clock-out — see [Break split](#break-split-overlay)). Those shares
+are paid first, capped by the entry's own gross, and whatever the deduction
+still needs falls on the last *unassigned* entry as before: put 30 minutes on
+Alpha and the other 18 stay on Beta, so Alpha nets 3:30 and Beta 4:42. Assign
+more than the session actually loses and the shares are scaled down in
+proportion to fit; assign every entry but too little, and the shortfall still
+lands on the last one, because the entries' nets always add up to the day's net.
+
+Every project figure `tk` shows — the month summary, the statistics panel, the
+day editor and the export — is net time, so the hours on your projects add up to
+the hours on your balance and a pause is never booked on a project.
 
 **Theme overrides.** Keys inside `[theme_overrides]` are role names; values are
 `"#rrggbb"` or a named terminal color. Recognised roles: `positive`,

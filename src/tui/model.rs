@@ -166,6 +166,7 @@ pub fn validate_form(
         end,
         project: String::new(),
         comment: String::new(),
+        break_share: None,
     };
     let gross_this = this.duration();
     // The day as saving this form would leave it: every other entry plus this
@@ -1168,6 +1169,7 @@ mod tests {
             end: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
             project: "A".into(),
             comment: "".into(),
+            break_share: None,
         };
         m.month = Some(month_data(
             today,
@@ -1477,6 +1479,7 @@ mod tests {
             end: t(e),
             project: "A".into(),
             comment: "".into(),
+            break_share: None,
         };
         m.screen = Screen::Day;
         m.day = Some(crate::tui::msg::DayData {
@@ -1504,6 +1507,7 @@ mod tests {
             end: t(12, 0),
             project: "A".into(),
             comment: "".into(),
+            break_share: None,
         }];
         let fd = |s: &str, e: &str, p: &str| FormData {
             id: None,
@@ -1567,6 +1571,7 @@ mod tests {
             end: en,
             project: "A".into(),
             comment: String::new(),
+            break_share: None,
         };
         let fd = |id, s: &str, en: &str| FormData {
             id,
@@ -1669,6 +1674,7 @@ mod tests {
                     end: t(12, 0),
                     project: "Alpha".into(),
                     comment: "morning".into(),
+                    break_share: None,
                 }],
             },
             projects: vec![crate::core::Project {

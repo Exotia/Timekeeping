@@ -816,6 +816,7 @@ mod tests {
                 end: t(17),
                 project: "Alpha".into(),
                 comment: "".into(),
+                break_share: None,
             }],
         }
     }
@@ -1508,6 +1509,7 @@ mod tests {
             end: t(en),
             project: p.into(),
             comment: "".into(),
+            break_share: None,
         };
         let days = vec![
             mk(1, DayKind::Work, vec![e(1, 1, 8, 16, "Alpha")]),

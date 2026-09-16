@@ -137,23 +137,24 @@ fn a_booked_entry_reports_its_own_net() {
         .stdout(predicate::str::contains("gross +04:00"))
         .stdout(predicate::str::contains("net +03:42"))
         .stdout(predicate::str::contains("day net +03:42"));
-    // Straight on at noon: one nine-hour session losing 48 minutes, 21 off the
-    // four-hour morning and 27 off the five-hour afternoon.
+    // Straight on at noon: one nine-hour session losing 48 minutes, and with no
+    // share assigned they all fall on the project worked last.
     tk(home)
         .args(["add", "today", "1200-1700", "-p", "Beta"])
         .assert()
         .success()
         .stdout(predicate::str::contains("gross +05:00"))
-        .stdout(predicate::str::contains("net +04:33"))
+        .stdout(predicate::str::contains("net +04:12"))
         .stdout(predicate::str::contains("day net +08:12"));
-    // And the morning's share is re-read from the session it now belongs to.
+    // And the morning's share is re-read from the session it now belongs to:
+    // the 18 minutes it paid on its own are given back.
     let shown = tk(home)
         .args(["export", "--format", "csv"])
         .assert()
         .success();
     let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
-    assert!(csv.contains("Alpha,,+04:00,+03:39"), "{csv}");
-    assert!(csv.contains("Beta,,+05:00,+04:33"), "{csv}");
+    assert!(csv.contains("Alpha,,+04:00,+04:00"), "{csv}");
+    assert!(csv.contains("Beta,,+05:00,+04:12"), "{csv}");
 }
 
 #[test]

@@ -555,6 +555,7 @@ mod tests {
                     end: t(12, 0),
                     project: "Beta".into(),
                     comment: "half".into(),
+                    break_share: None,
                 }],
                 14 => vec![
                     Entry {
@@ -564,6 +565,7 @@ mod tests {
                         end: t(12, 0),
                         project: "Alpha".into(),
                         comment: "morning".into(),
+                        break_share: None,
                     },
                     Entry {
                         id: 3,
@@ -572,6 +574,7 @@ mod tests {
                         end: t(16, 0),
                         project: "Alpha".into(),
                         comment: "afternoon".into(),
+                        break_share: None,
                     },
                 ],
                 _ => vec![],
@@ -857,6 +860,7 @@ mod tests {
                 end: t(12, 0),
                 project: "Alpha".into(),
                 comment: "morning".into(),
+                break_share: None,
             },
             Entry {
                 id: 3,
@@ -865,13 +869,15 @@ mod tests {
                 end: t(17, 0),
                 project: "Beta".into(),
                 comment: "afternoon".into(),
+                break_share: None,
             },
         ];
         let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
-        // One nine-hour session losing 48: 21 minutes off the morning, 27 off
-        // the afternoon. Beta also holds the 1st's 222, so it leads.
-        assert_eq!(v.project_totals[0], ("Beta".to_string(), Minutes(495), 1));
-        assert_eq!(v.project_totals[1], ("Alpha".to_string(), Minutes(219), 0));
+        // One nine-hour session losing 48, all of it on the project worked
+        // last: nothing off Alpha's morning, 48 off Beta's afternoon. Beta also
+        // holds the 1st's 222, so it leads.
+        assert_eq!(v.project_totals[0], ("Beta".to_string(), Minutes(474), 1));
+        assert_eq!(v.project_totals[1], ("Alpha".to_string(), Minutes(240), 0));
         assert_eq!(v.project_totals.iter().map(|p| p.1).sum::<Minutes>(), v.net);
 
         let th = Theme::dark();
@@ -893,14 +899,17 @@ mod tests {
             .iter()
             .find(|r| r.contains("morning"))
             .unwrap_or_else(|| panic!("{joined}"));
-        assert!(morning.contains("+04:00"), "its gross:\n{joined}");
-        assert!(morning.contains("+03:39"), "its net:\n{joined}");
+        assert!(
+            morning.contains("+04:00"),
+            "its gross and its net:\n{joined}"
+        );
+        assert!(!morning.contains("+03:"), "nothing came off it:\n{joined}");
         let afternoon = rows
             .iter()
             .find(|r| r.contains("afternoon"))
             .unwrap_or_else(|| panic!("{joined}"));
         assert!(afternoon.contains("+05:00"), "its gross:\n{joined}");
-        assert!(afternoon.contains("+04:33"), "its net:\n{joined}");
+        assert!(afternoon.contains("+04:12"), "its net:\n{joined}");
     }
 
     #[test]

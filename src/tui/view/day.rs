@@ -260,6 +260,7 @@ mod tests {
                     end: *e,
                     project: "Alpha".into(),
                     comment: String::new(),
+                    break_share: None,
                 })
                 .collect(),
         };
@@ -321,6 +322,7 @@ mod tests {
                 end: t(17, 0),
                 project: "Alpha".into(),
                 comment: String::new(),
+                break_share: None,
             }],
         };
         let stats = day_stats(
@@ -366,22 +368,25 @@ mod tests {
     fn every_entry_row_shows_its_own_net() {
         let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
         // Straight through from 08:00 to 17:00 with a switch at noon: one
-        // nine-hour session losing 48 minutes, 21 off the four-hour morning and
-        // 27 off the five-hour afternoon.
+        // nine-hour session losing 48 minutes, and with no share assigned they
+        // fall on the project worked last — the morning keeps its four hours.
         let rows = day_rows(date, &[(t(8, 0), t(12, 0)), (t(12, 0), t(17, 0))]);
         let joined = rows.join("\n");
         let morning = rows
             .iter()
             .find(|r| r.contains("08:00"))
             .unwrap_or_else(|| panic!("{joined}"));
-        assert!(morning.contains("+04:00"), "its gross:\n{joined}");
-        assert!(morning.contains("+03:39"), "its net:\n{joined}");
+        assert!(
+            morning.contains("+04:00"),
+            "its gross and its net:\n{joined}"
+        );
+        assert!(!morning.contains("+03:"), "nothing came off it:\n{joined}");
         let afternoon = rows
             .iter()
             .find(|r| r.contains("17:00"))
             .unwrap_or_else(|| panic!("{joined}"));
         assert!(afternoon.contains("+05:00"), "its gross:\n{joined}");
-        assert!(afternoon.contains("+04:33"), "its net:\n{joined}");
+        assert!(afternoon.contains("+04:12"), "its net:\n{joined}");
         // The columns are named, and the net ones sit between gross and project.
         let header = rows
             .iter()
@@ -411,6 +416,7 @@ mod tests {
                     end: t(12, 0),
                     project: "Alpha".into(),
                     comment: "morning".into(),
+                    break_share: None,
                 },
                 Entry {
                     id: 2,
@@ -419,6 +425,7 @@ mod tests {
                     end: t(16, 0),
                     project: "Beta".into(),
                     comment: "".into(),
+                    break_share: None,
                 },
             ],
         };

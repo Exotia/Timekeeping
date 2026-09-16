@@ -78,6 +78,11 @@ pub struct Entry {
     pub end: NaiveTime,
     pub project: String,
     pub comment: String,
+    /// The share of its session's break deduction this entry was explicitly
+    /// given, if any. `None` leaves the entry to the default rule (see
+    /// [`crate::core::entry_nets`]); `Some` is what the user typed, capped by
+    /// the entry's own gross.
+    pub break_share: Option<Minutes>,
 }
 
 pub fn minutes_of(t: NaiveTime) -> i32 {
@@ -133,6 +138,7 @@ mod tests {
             end: NaiveTime::from_hms_opt(end.0, end.1, 0).unwrap(),
             project: "Alpha".into(),
             comment: String::new(),
+            break_share: None,
         }
     }
 

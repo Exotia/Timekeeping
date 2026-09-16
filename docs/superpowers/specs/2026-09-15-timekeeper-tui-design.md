@@ -113,6 +113,7 @@ pub struct Entry {
     pub end: NaiveTime,                    // end <= start means crosses midnight
     pub project: String,
     pub comment: String,
+    pub break_share: Option<Minutes>,      // explicit share of the session's deduction
 }
 
 pub struct Day {
@@ -158,18 +159,34 @@ and stands alone after a pause.
 
 **Net.** `gross − deduction`, never negative.
 
-**Net per entry.** The deduction of a session (see "Break deduction") is
-distributed over the entries of that session in proportion to their gross
-length, rounded to whole minutes with the largest-remainder method so the
-entries' nets sum exactly to the session's net. An entry's net is its gross
-minus its share. Project totals, the month summary, the statistics and the day
-editor use entry nets; pauses never count as project time. With the default
-tiers, 08–12 on Alpha plus 12–17 on Beta is one nine-hour session losing 48
-minutes: Alpha's share is 48·240/540 = 21.33 → 21, Beta's 26.67 → 27 — the
-largest remainder takes the odd minute — so Alpha nets 3:39, Beta 4:33 and the
-day 8:12. A session of one entry hands it the whole deduction; two sessions are
-split independently. A session never deducts more than was worked in it, so no
-entry's net is negative and the day's net is the sum of its entries' nets.
+**Net per entry.** A session's deduction (see "Break deduction") has to be
+carried by the entries of that session, and two rules decide which:
+
+1. *Explicit shares.* An entry's `break_share`, when set, is the minutes it
+   pays, capped by its own gross. If the explicit shares of a session come to
+   more than the session's deduction they are scaled down in proportion to each
+   other, to whole minutes by the largest-remainder method (ties to the earlier
+   entry), so they add up to the deduction exactly and nothing is left for the
+   unassigned entries.
+2. *The default: the project worked last.* Whatever the deduction still needs
+   falls on the **last unassigned** entry of the session as far as its gross
+   allows, then on the one before it, and so on. That is where a break actually
+   lands: the clock stops, and the project being worked at that moment pays for
+   it. If every entry of the session is assigned and the shares fall short, the
+   remainder walks the same way from the last entry backwards — an explicit
+   share is a floor in that case, not a ceiling, because the day's net may not
+   disagree with the day's deduction.
+
+An entry's net is its gross minus its share. Project totals, the month summary,
+the statistics and the day editor use entry nets; pauses never count as project
+time. With the default tiers, 08–12 on Alpha plus 12–17 on Beta is one nine-hour
+session losing 48 minutes, and with no share assigned all 48 come off Beta: Alpha
+nets 4:00, Beta 4:12 and the day 8:12. Putting 30 minutes on Alpha leaves the
+other 18 on Beta: 3:30 and 4:42. A session of one entry hands it the whole
+deduction; two sessions are settled independently, and a share never pays for
+another session's break. A session never deducts more than was worked in it, so
+no entry's net is negative and the day's net is always the sum of its entries'
+nets.
 
 **Day balance.** `net − target`. A Flex day therefore contributes `−target`.
 A partial flex (leaving early) is simply a short Work day.

@@ -40,6 +40,7 @@ fn september_2026() -> (NaiveDate, Vec<Day>) {
                     end: t(17),
                     project: "Alpha".into(),
                     comment: "snapshot".into(),
+                    break_share: None,
                 }]
             } else {
                 vec![]
@@ -214,6 +215,7 @@ fn stats_year_model() -> (
                 end: t(8 + hours),
                 project: "Alpha".into(),
                 comment: "".into(),
+                break_share: None,
             }],
         }
     };
@@ -336,6 +338,7 @@ fn stats_screen_80x24_running_month() {
                 end: t(17),
                 project: "Alpha".into(),
                 comment: String::new(),
+                break_share: None,
             }],
         ),
         // A Tuesday nobody booked: a whole target short.
@@ -434,6 +437,7 @@ fn stats_screen_80x24_shifted_month() {
                 end: t(17),
                 project: "Alpha".into(),
                 comment: String::new(),
+                break_share: None,
             }],
         ),
         // A Tuesday nobody booked: the whole target is missing, so that week's
