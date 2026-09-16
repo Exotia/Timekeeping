@@ -384,7 +384,12 @@ intended (asks "crosses midnight?"), overlap with existing entry.
 ### 9.3 Statistics
 
 Range selector: This month, Last month, Quarter, Year. (A Custom range with
-two date inputs was planned for v1 but deferred to a follow-up release.) Body: per-project table with colored bars, hours, share; below,
+two date inputs was planned for v1 but deferred to a follow-up release.) Body:
+the balance chart, one bar per period of the range, footed by `total`, `best`
+and `worst` and then by `net`, `target` and `balance` — the only place the
+break deduction is shown, because it is only readable next to the balance it
+moves; below it the per-project table with colored bars, hours, share and a
+`worked` total, which shows worked time and nothing else; below that the
 day-kind table: vacation used/remaining, sick, flex, holidays, absences,
 missing days. `Esc` back.
 

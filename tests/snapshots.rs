@@ -188,6 +188,27 @@ fn stats_screen_80x24_year() {
         out.iter().any(|r| r.contains("total ")),
         "chart footer missing:\n{joined}"
     );
+    // The balance figures sit under the chart, and the projects panel is about
+    // worked time alone — a break deduction beside project hours reads as if the
+    // projects had lost the time.
+    let footer = out
+        .iter()
+        .find(|r| r.contains("net "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    assert!(
+        footer.contains("target ") && footer.contains("balance "),
+        "{joined}"
+    );
+    let projects_footer = out
+        .iter()
+        .find(|r| r.contains("worked "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    for stray in ["net", "target", "balance"] {
+        assert!(
+            !projects_footer.contains(stray),
+            "{stray} beside the projects:\n{joined}"
+        );
+    }
     // Every panel keeps its frame: range, chart, projects, day types.
     assert_eq!(
         out.iter().filter(|r| r.starts_with('╭')).count(),

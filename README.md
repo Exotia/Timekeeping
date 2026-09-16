@@ -307,10 +307,16 @@ Under the range selector sits the overtime chart: one bar per day for a week,
 per ISO week for a month, per month for a quarter or a year. Bars grow to the
 right of the zero line when the period is over its target and to the left when
 it is under it, and the line below them sums the range and names its best and
-worst period. Days before `start_date` are left out, the same as everywhere
-else the balance is counted. A terminal too short for every bar shows the most
-recent ones, ending at the period today falls in, and marks the cut with a `…`
-in the panel title.
+worst period. A second line under it carries `net`, `target` and `balance` for
+the range: the break deduction is the difference between what you worked and
+your net, so it is only ever shown next to the balance it moves. Days before
+`start_date` are left out, the same as everywhere else the balance is counted.
+A terminal too short for every bar shows the most recent ones, ending at the
+period today falls in, and marks the cut with a `…` in the panel title.
+
+The panel below it is about work alone: one bar per project with its hours and
+its share of the range, and `worked` — the gross time in the range — under
+them. No deduction, no target, no balance; those belong to the chart.
 
 ### Overlays
 

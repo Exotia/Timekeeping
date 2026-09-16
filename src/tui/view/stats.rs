@@ -361,7 +361,8 @@ fn value_spans(m: Minutes, t: &Theme) -> Vec<Span<'static>> {
 /// The overtime chart: one bar per bucket, growing left or right of a zero line.
 pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
     let inner_w = area.width.saturating_sub(2) as usize;
-    let rows = area.height.saturating_sub(4) as usize;
+    // Borders, the zero axis and the two footer lines.
+    let rows = area.height.saturating_sub(5) as usize;
     let shown = visible_buckets(v, rows);
     let bar_w = inner_w.saturating_sub(CHART_GUTTER).max(1);
     let max_neg = shown.iter().map(|b| -b.balance.0).max().unwrap_or(0).max(0);
@@ -410,6 +411,17 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
         footer.push(minutes_span(b.balance, t));
     }
     lines.push(Line::from(footer));
+    // Net, target and balance belong here and nowhere else: net is gross minus
+    // the break deduction, and a deduction only makes sense read next to the
+    // balance it moves — never beside the hours a project was worked.
+    lines.push(Line::from(vec![
+        Span::styled("net ", Style::default().fg(t.muted)),
+        Span::raw(v.net.to_string()),
+        Span::styled(" · target ", Style::default().fg(t.muted)),
+        Span::raw(format!("-{}", v.target.hhmm())),
+        Span::styled(" · balance ", Style::default().fg(t.muted)),
+        minutes_span(v.net - v.target, t),
+    ]));
 
     let title = match v.granularity {
         Granularity::Day => "Balance per day",
@@ -429,10 +441,11 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView) {
 /// have their minimum.
 fn chart_height(v: &StatsView, area: Rect) -> u16 {
     let available = area.height.saturating_sub(3 + 5 + 6);
-    if v.buckets.is_empty() || available < 5 {
+    // Two borders, the zero axis, two footer lines and at least one bar.
+    if v.buckets.is_empty() || available < 6 {
         return 0;
     }
-    ((v.buckets.len() + 4) as u16).min(available)
+    ((v.buckets.len() + 5) as u16).min(available)
 }
 
 pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: RangeKind) {
@@ -514,12 +527,6 @@ pub fn draw_stats(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, active: R
     lines.push(Line::from(vec![
         Span::styled("worked ", Style::default().fg(t.muted)),
         Span::raw(v.total.hhmm()),
-        Span::styled("   net ", Style::default().fg(t.muted)),
-        Span::raw(v.net.hhmm()),
-        Span::styled("   target ", Style::default().fg(t.muted)),
-        Span::raw(v.target.hhmm()),
-        Span::styled("   balance ", Style::default().fg(t.muted)),
-        minutes_span(v.net - v.target, t),
     ]));
     f.render_widget(
         Paragraph::new(lines).block(block(t, Some("Projects"))),
@@ -835,6 +842,29 @@ mod tests {
         let joined = rows.join("\n");
         assert!(contains(&rows, "total -07:24"), "{joined}");
         assert!(contains(&rows, "balance -07:24"), "{joined}");
+        // The deduction lives in the gap between worked and net, so net only ever
+        // shows up next to the balance figures, never beside the project hours.
+        let worked = rows
+            .iter()
+            .find(|r| r.contains("worked "))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(worked.contains("18:00"), "{joined}");
+        for stray in ["net", "target", "balance"] {
+            assert!(
+                !worked.contains(stray),
+                "{stray} beside the projects: {joined}"
+            );
+        }
+        // …and all three sit under the chart's total line.
+        let footer = rows
+            .iter()
+            .find(|r| r.contains("net "))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(footer.contains("target "), "{joined}");
+        assert!(footer.contains("balance "), "{joined}");
+        let total_row = rows.iter().position(|r| r.contains("total ")).unwrap();
+        let net_row = rows.iter().position(|r| r.contains("net ")).unwrap();
+        assert_eq!(net_row, total_row + 1, "{joined}");
     }
 
     #[test]
