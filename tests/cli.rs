@@ -117,6 +117,57 @@ fn clock_in_and_out() {
 }
 
 #[test]
+fn clock_in_switch_and_out_are_project_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    // Nothing worked yet, so there is no project to fall back on.
+    tk(home)
+        .arg("in")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no project"));
+    tk(home)
+        .args(["in", "-p", "Alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Clocked in on Alpha"));
+    tk(home)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\u{23f1} Alpha"));
+    // Switching books the running session and opens the next one on the new project.
+    let switched = tk(home)
+        .args(["switch", "-p", "Beta", "-m", "standup"])
+        .assert()
+        .success();
+    let line = String::from_utf8(switched.get_output().stdout.clone()).unwrap();
+    assert!(line.contains("Alpha"), "the booked project: {line}");
+    assert!(line.contains("now on Beta"), "the new session: {line}");
+    // Already on Beta: refused rather than booking a second entry.
+    tk(home)
+        .args(["switch", "-p", "Beta"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already on"));
+    tk(home)
+        .arg("out")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Beta"));
+    // Both entries are on the books, in order and without overlapping.
+    let shown = tk(home)
+        .args(["export", "--format", "csv"])
+        .assert()
+        .success();
+    let csv = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    let rows: Vec<&str> = csv.lines().skip(1).filter(|l| !l.is_empty()).collect();
+    assert_eq!(rows.len(), 2, "{csv}");
+    assert!(rows[0].contains(",Alpha,"), "{csv}");
+    assert!(rows[1].contains(",Beta,"), "{csv}");
+}
+
+#[test]
 fn backup_writes_file() {
     let dir = tempfile::tempdir().unwrap();
     tk(dir.path())

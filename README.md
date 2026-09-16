@@ -145,9 +145,10 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | Command | Options | What it does |
 | --- | --- | --- |
 | `tk` | | Open the terminal UI. |
-| `tk in` | `--force` | Clock in at the current minute. `--force` replaces an existing open clock-in. |
-| `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry. Without `--project` the last used project is reused; if there is none, the command fails. |
-| `tk status` | | One line for prompts and status bars. Clocked in: running time, the time you clocked in at, today's net and the overall balance. Otherwise: `not clocked in`, today's net and the overall balance. |
+| `tk in` | `-p, --project NAME`<br>`--force` | Clock in at the current minute on `NAME`. Without `--project` the last used project is taken; on a brand-new database there is none and the command fails. `--force` replaces an existing open clock-in. |
+| `tk switch` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Record the running session and clock in on `NAME` in one step. The new session starts exactly where the recorded entry ends, so the two never overlap. Switching to the project already running is refused. |
+| `tk out` | `-p, --project NAME`<br>`-m, --comment TEXT` | Close the open session and record the entry on the project it was opened with. `--project` books it on another one instead, which is how a clock-in on the wrong project is corrected. |
+| `tk status` | | One line for prompts and status bars. Clocked in: the project, the running time, the time you clocked in at, today's net and the overall balance. Otherwise: `not clocked in`, today's net and the overall balance. |
 | `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. |
 | `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. |
 | `tk projects` | | Same as `tk projects list`. |
@@ -173,8 +174,9 @@ Global flags, accepted with any subcommand: `--home DIR`, `--help`, `--version`.
 midnight; `END` equal to `START` is rejected.
 
 ```bash
-tk in
-tk out -p Alpha -m "sprint review"
+tk in -p Alpha
+tk switch -p Beta -m "sprint review"
+tk out -m "wrap-up"
 tk add yesterday 9-1730 -p Alpha
 tk day 2026-12-27 vacation --to 2026-12-31
 tk day 2026-10-02 absence --label "Betriebsausflug"

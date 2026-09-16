@@ -38,8 +38,15 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
             // counting instead of wrapping back to 00:00 at midnight.
             let running = running_minutes(NaiveDateTime::new(s.date, s.start), now);
             let net = provisional_net_with(&entries, running, &rules);
+            // A session recorded before `tk` stored the project simply has none to name.
+            let project = s
+                .project
+                .as_deref()
+                .map(|p| format!("{p} "))
+                .unwrap_or_default();
             format!(
-                "⏱ {} (in {}) · today {} · balance {}",
+                "⏱ {}{} (in {}) · today {} · balance {}",
+                project,
                 running.hhmm(),
                 s.start.format("%H:%M"),
                 net,
@@ -90,7 +97,22 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 None => bail!("no project yet; pass --project NAME"),
             };
             ctx.store.clock_in(today, t, &project)?;
-            writeln!(out, "Clocked in at {}", t.format("%H:%M"))?;
+            writeln!(out, "Clocked in on {project} at {}", t.format("%H:%M"))?;
+        }
+        Command::Switch { project, comment } => {
+            let (e, s) =
+                ctx.store
+                    .switch_project(now.time(), &project, comment.as_deref().unwrap_or(""))?;
+            writeln!(
+                out,
+                "Booked {}–{} {} ({}) · now on {} since {}",
+                e.start.format("%H:%M"),
+                e.end.format("%H:%M"),
+                e.project,
+                e.duration(),
+                s.project.as_deref().unwrap_or(&project),
+                s.start.format("%H:%M")
+            )?;
         }
         Command::Out { project, comment } => {
             // One transaction in the store: the entry and the cleared session, or neither.
@@ -397,7 +419,7 @@ mod tests {
             )
             .unwrap();
         let line = status_line(&c, dt(2026, 9, 15, 1, 0)).unwrap();
-        assert!(line.starts_with("⏱ 02:00 (in 23:00)"), "{line}");
+        assert!(line.starts_with("⏱ Alpha 02:00 (in 23:00)"), "{line}");
         assert!(line.contains("today +02:00"), "{line}");
         assert!(line.contains("balance"), "{line}");
     }

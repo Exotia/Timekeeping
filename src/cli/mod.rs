@@ -39,6 +39,15 @@ pub enum Command {
         #[arg(short = 'm', long)]
         comment: Option<String>,
     },
+    /// Book the running session and clock in on another project
+    Switch {
+        /// Project to switch to
+        #[arg(short, long)]
+        project: String,
+        /// Comment for the entry being booked
+        #[arg(short = 'm', long)]
+        comment: Option<String>,
+    },
     /// One-line status for prompts and status bars
     Status,
     /// Add an entry: tk add 2026-09-14 0900-1530 -p Alpha -m "note"
