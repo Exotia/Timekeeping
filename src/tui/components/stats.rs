@@ -25,6 +25,7 @@ impl AppComponent<Msg, UserEvent> for StatsScreen {
             Key::Char('[') | Key::PageUp => Msg::StatsShift(-1),
             Key::Char(']') | Key::PageDown => Msg::StatsShift(1),
             Key::Char('t') => Msg::StatsToday,
+            Key::Char('r') => Msg::ToggleChartMode,
             Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Esc | Key::Char('q') => Msg::Back,
@@ -66,5 +67,17 @@ mod tests {
         assert_eq!(key(Key::PageUp), Some(Msg::StatsShift(-1)));
         assert_eq!(key(Key::PageDown), Some(Msg::StatsShift(1)));
         assert_eq!(key(Key::Char('t')), Some(Msg::StatsToday));
+    }
+
+    #[test]
+    fn r_toggles_the_chart_mode() {
+        let mut c = StatsScreen::default();
+        assert_eq!(
+            c.on(&Event::Keyboard(KeyEvent::new(
+                Key::Char('r'),
+                KeyModifiers::NONE,
+            ))),
+            Some(Msg::ToggleChartMode)
+        );
     }
 }

@@ -19,6 +19,17 @@ pub enum RangeKind {
     Year,
 }
 
+/// What the bars of the statistics chart measure. `r` flips between them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ChartMode {
+    /// One bar per period, each the balance that period earned on its own.
+    #[default]
+    PerPeriod,
+    /// One bar per period, each the balance as it stood when that period ended
+    /// — the initial balance and everything before the range included.
+    Running,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Confirm {
     DeleteEntry(i64),
@@ -97,6 +108,8 @@ pub enum Msg {
     StatsShift(i32),
     /// `t`: bring the statistics anchor back to today.
     StatsToday,
+    /// `r`: switch the chart between the per-period bars and the running balance.
+    ToggleChartMode,
 }
 
 #[derive(Debug, Clone)]

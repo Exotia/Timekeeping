@@ -12,7 +12,7 @@ use crate::core::{
     Day, DayKind, HolidayCalendar, HoursFormat, Minutes, Rules, TodayCtx, day_stats, is_working_day,
 };
 use crate::tui::model::{Model, month_name};
-use crate::tui::msg::{RangeKind, StatsData};
+use crate::tui::msg::{ChartMode, RangeKind, StatsData};
 use crate::tui::theme::Theme;
 use crate::tui::worker::month_range;
 
@@ -343,7 +343,7 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
         m.vacation_allowance,
         m.stats_range,
     );
-    draw_stats(f, area, &m.theme, &v, m.stats_range, m.hours);
+    draw_stats(f, area, &m.theme, &v, m.stats_range, m.hours, m.chart_mode);
 }
 
 /// Width of the chart's right-aligned value column — `+100.00h` plus a space.
@@ -404,47 +404,18 @@ fn value_spans(m: Minutes, fmt: HoursFormat, t: &Theme) -> Vec<Span<'static>> {
     vec![Span::raw(" ".repeat(pad)), s]
 }
 
-/// The overtime chart: one bar per bucket, growing left or right of a zero line.
-pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, fmt: HoursFormat) {
-    let inner_w = area.width.saturating_sub(2) as usize;
-    // Borders, the zero axis and the two footer lines.
-    let rows = area.height.saturating_sub(5) as usize;
-    let shown = visible_buckets(v, rows);
-    let bar_w = inner_w.saturating_sub(CHART_GUTTER).max(1);
-    let max_neg = shown.iter().map(|b| -b.balance.0).max().unwrap_or(0).max(0);
-    let max_pos = shown.iter().map(|b| b.balance.0).max().unwrap_or(0).max(0);
-    let zero = zero_column(bar_w, max_neg, max_pos);
-    let pos_span = bar_w - zero - 1;
-
-    let mut lines: Vec<Line> = Vec::new();
-    for b in shown {
-        let (neg, pos) = if b.balance.0 < 0 {
-            (bar_len(zero, -b.balance.0, max_neg), 0)
-        } else {
-            (0, bar_len(pos_span, b.balance.0, max_pos))
-        };
-        let mut l = vec![
-            Span::styled(format!("{:<7}", b.label), Style::default().fg(t.text)),
-            Span::raw(" ".repeat(1 + zero - neg)),
-            Span::styled("█".repeat(neg), Style::default().fg(t.negative)),
-            Span::styled("│", Style::default().fg(t.muted)),
-            Span::styled("█".repeat(pos), Style::default().fg(t.positive)),
-            Span::raw(" ".repeat(pos_span - pos)),
-        ];
-        l.extend(value_spans(b.balance, fmt, t));
-        lines.push(Line::from(l));
-    }
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(8 + zero)),
-        Span::styled("0", Style::default().fg(t.muted)),
-    ]));
-
+/// The range's own total, and the best and worst of the periods on show — so a
+/// chart that had to cut itself never names a period the reader cannot see.
+fn per_period_footer(
+    t: &Theme,
+    v: &StatsView,
+    shown: &[Bucket],
+    fmt: HoursFormat,
+) -> Vec<Span<'static>> {
     let mut footer = vec![
         Span::styled("total ", Style::default().fg(t.muted)),
         minutes_span(v.balance_total, fmt, t),
     ];
-    // Over what is on show, so a chart that had to cut itself never names a
-    // period the reader cannot see.
     let (best, worst) = best_worst(shown);
     for (label, idx) in [("best", best), ("worst", worst)] {
         let Some(b) = idx.and_then(|i| shown.get(i)) else {
@@ -456,7 +427,89 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, fmt: Hour
         ));
         footer.push(minutes_span(b.balance, fmt, t));
     }
-    lines.push(Line::from(footer));
+    footer
+}
+
+/// Where the running line starts, where it ends and how far the range moved it.
+/// The end is the last bar on show — the number the reader can see — while the
+/// change is the whole range's, which is the same thing whenever the chart is
+/// not cut short. There is no best or worst period to name here: every bar of a
+/// running chart already holds the ones before it.
+fn running_footer(
+    t: &Theme,
+    v: &StatsView,
+    shown: &[Bucket],
+    fmt: HoursFormat,
+) -> Vec<Span<'static>> {
+    let end = shown.last().map_or(v.carried_in, |b| b.running);
+    let change = v.buckets.last().map_or(v.carried_in, |b| b.running) - v.carried_in;
+    vec![
+        Span::styled("carried in ", Style::default().fg(t.muted)),
+        minutes_span(v.carried_in, fmt, t),
+        Span::styled(" · end ", Style::default().fg(t.muted)),
+        minutes_span(end, fmt, t),
+        Span::styled(" · change ", Style::default().fg(t.muted)),
+        minutes_span(change, fmt, t),
+    ]
+}
+
+/// What one bar measures in `mode`: the bucket's own balance, or the balance as
+/// it stood when that bucket ended.
+fn bar_value(b: &Bucket, mode: ChartMode) -> Minutes {
+    match mode {
+        ChartMode::PerPeriod => b.balance,
+        ChartMode::Running => b.running,
+    }
+}
+
+/// The overtime chart: one bar per bucket, growing left or right of a zero line.
+pub fn draw_chart(
+    f: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    v: &StatsView,
+    fmt: HoursFormat,
+    mode: ChartMode,
+) {
+    let inner_w = area.width.saturating_sub(2) as usize;
+    // Borders, the zero axis and the two footer lines.
+    let rows = area.height.saturating_sub(5) as usize;
+    let shown = visible_buckets(v, rows);
+    let bar_w = inner_w.saturating_sub(CHART_GUTTER).max(1);
+    let val = |b: &Bucket| bar_value(b, mode).0;
+    let max_neg = shown.iter().map(|b| -val(b)).max().unwrap_or(0).max(0);
+    let max_pos = shown.iter().map(val).max().unwrap_or(0).max(0);
+    let zero = zero_column(bar_w, max_neg, max_pos);
+    let pos_span = bar_w - zero - 1;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for b in shown {
+        let m = bar_value(b, mode);
+        let (neg, pos) = if m.0 < 0 {
+            (bar_len(zero, -m.0, max_neg), 0)
+        } else {
+            (0, bar_len(pos_span, m.0, max_pos))
+        };
+        let mut l = vec![
+            Span::styled(format!("{:<7}", b.label), Style::default().fg(t.text)),
+            Span::raw(" ".repeat(1 + zero - neg)),
+            Span::styled("█".repeat(neg), Style::default().fg(t.negative)),
+            Span::styled("│", Style::default().fg(t.muted)),
+            Span::styled("█".repeat(pos), Style::default().fg(t.positive)),
+            Span::raw(" ".repeat(pos_span - pos)),
+        ];
+        l.extend(value_spans(m, fmt, t));
+        lines.push(Line::from(l));
+    }
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(8 + zero)),
+        Span::styled("0", Style::default().fg(t.muted)),
+    ]));
+
+    lines.push(Line::from(match mode {
+        ChartMode::PerPeriod => per_period_footer(t, v, shown, fmt),
+        ChartMode::Running => running_footer(t, v, shown, fmt),
+    }));
     // Net, target and balance belong together: the target and the balance are
     // about the day, not about any project, so they are read here next to the
     // net they move and never beside the hours a project was worked.
@@ -469,10 +522,13 @@ pub fn draw_chart(f: &mut Frame, area: Rect, t: &Theme, v: &StatsView, fmt: Hour
         minutes_span(v.net - v.target, fmt, t),
     ]));
 
-    let title = match v.granularity {
-        Granularity::Day => "Balance per day",
-        Granularity::Week => "Balance per week",
-        Granularity::Month => "Balance per month",
+    let title = match mode {
+        ChartMode::Running => "Running balance",
+        ChartMode::PerPeriod => match v.granularity {
+            Granularity::Day => "Balance per day",
+            Granularity::Week => "Balance per week",
+            Granularity::Month => "Balance per month",
+        },
     };
     let title = if shown.len() < v.buckets.len() {
         format!("… {title}")
@@ -501,6 +557,7 @@ pub fn draw_stats(
     v: &StatsView,
     active: RangeKind,
     fmt: HoursFormat,
+    mode: ChartMode,
 ) {
     let chart_h = chart_height(v, area);
     let [sel, chart, proj, kinds] = Layout::vertical([
@@ -547,7 +604,7 @@ pub fn draw_stats(
     );
 
     if chart_h > 0 {
-        draw_chart(f, chart, t, v, fmt);
+        draw_chart(f, chart, t, v, fmt, mode);
     }
 
     let total = v.total.0.max(1) as f64;
@@ -621,7 +678,7 @@ mod tests {
     use crate::core::{
         Day, DayKind, Entry, HolidayCalendar, HoursFormat, Minutes, Rules, default_tiers,
     };
-    use crate::tui::msg::{RangeKind, StatsData};
+    use crate::tui::msg::{ChartMode, RangeKind, StatsData};
     use crate::tui::theme::Theme;
     use crate::tui::view::testing::{contains, render};
     use chrono::{NaiveDate, NaiveTime};
@@ -1067,6 +1124,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1115,6 +1173,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Decimal,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1149,6 +1208,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         assert!(rows.iter().all(|r| r.chars().count() <= 20));
@@ -1169,6 +1229,7 @@ mod tests {
                 &v,
                 RangeKind::Year,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1189,6 +1250,7 @@ mod tests {
                 &ahead,
                 RangeKind::Year,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1209,6 +1271,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1228,6 +1291,7 @@ mod tests {
                     &v,
                     RangeKind::Year,
                     HoursFormat::Hm,
+                    ChartMode::PerPeriod,
                 )
             });
             let joined = rows.join("\n");
@@ -1254,6 +1318,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1286,6 +1351,61 @@ mod tests {
         );
     }
 
+    /// In running mode every bar is the balance as it stood when its period
+    /// ended: the line starts from what was carried in, crosses the zero line
+    /// when the range spends it, and the footer says where it came in, where it
+    /// ends and how far the range moved it.
+    #[test]
+    fn the_running_chart_draws_the_balance_as_it_stood() {
+        // +02:24 on the books when September opens, a +24 week and a week a
+        // whole target short: 144 → 168 → -300, flat from there.
+        let v = view_carrying(
+            RangeKind::Month,
+            vec![plus24(d(2026, 9, 1)), missing(d(2026, 9, 8))],
+            Minutes(144),
+        );
+        let rows = render(100, 30, |f| {
+            draw_stats(
+                f,
+                f.area(),
+                &Theme::dark(),
+                &v,
+                RangeKind::Month,
+                HoursFormat::Hm,
+                ChartMode::Running,
+            )
+        });
+        let joined = rows.join("\n");
+        assert!(contains(&rows, "Running balance"), "{joined}");
+        assert!(!contains(&rows, "Balance per week"), "{joined}");
+        assert!(contains(&rows, "+02:48"), "KW 36 ends at 168:\n{joined}");
+        assert!(contains(&rows, "-05:00"), "KW 37 ends at -300:\n{joined}");
+        assert!(contains(&rows, "carried in +02:24"), "{joined}");
+        assert!(contains(&rows, "end -05:00"), "{joined}");
+        assert!(contains(&rows, "change -07:24"), "{joined}");
+        // A bar that already holds every period before it has no best or worst.
+        assert!(!contains(&rows, "best "), "{joined}");
+        assert!(!contains(&rows, "worst "), "{joined}");
+        // The second footer line is the range's own, unchanged.
+        assert!(contains(&rows, "balance -07:24"), "{joined}");
+        // A balance still in credit draws right of the zero line, one in debt
+        // left of it.
+        let (bars, zero) = bars_and_zero(rows.iter().find(|r| r.contains("KW 36")).unwrap());
+        assert!(bars.iter().all(|b| *b > zero), "{joined}");
+        let row = rows.iter().find(|r| r.contains("KW 37")).unwrap();
+        let (bars, zero) = bars_and_zero(row);
+        assert!(!bars.is_empty(), "no bar drawn: {row}");
+        assert!(
+            bars.iter().all(|b| *b < zero),
+            "a negative running balance must sit left of the zero line: {row}"
+        );
+        // The weeks after today are flat at today's value, not at zero.
+        for label in ["KW 38", "KW 39", "KW 40"] {
+            let row = rows.iter().find(|r| r.contains(label)).unwrap();
+            assert!(row.contains("-05:00"), "{label} is not flat: {row}");
+        }
+    }
+
     #[test]
     fn a_negative_only_chart_grows_to_the_left() {
         let v = view(RangeKind::Month, vec![missing(d(2026, 9, 8))]);
@@ -1297,6 +1417,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let row = rows.iter().find(|r| r.contains("KW 37")).unwrap();
@@ -1326,6 +1447,7 @@ mod tests {
                 &v,
                 RangeKind::Year,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         let joined = rows.join("\n");
@@ -1365,6 +1487,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         assert!(!contains(&rows, "Balance per"), "{}", rows.join("\n"));
@@ -1452,6 +1575,7 @@ mod tests {
                 &v,
                 RangeKind::Month,
                 HoursFormat::Hm,
+                ChartMode::PerPeriod,
             )
         });
         assert!(contains(&rows, "2026-09-01 → 2026-09-08"));

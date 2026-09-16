@@ -326,6 +326,7 @@ restart.
 | `4` | Calendar year |
 | `[` / `PageUp`, `]` / `PageDown` | Previous / next period of that length |
 | `t` | Back to the period today falls in |
+| `r` | Toggle the chart between per-period and running balance |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |
@@ -349,6 +350,20 @@ so they are only ever shown next to the chart they move. Days before
 A terminal too short for every bar shows the bars around where you are looking
 — ending at the period today falls in, or at the one you have walked to — and
 marks the cut with a `…` in the panel title.
+
+`r` switches the chart between the two things a bar can mean, and the mode
+holds for the session — walking to another period or another range length keeps
+it. Per period (the default, titled `Balance per week` and so on) each bar is
+what that period earned on its own. Running (titled `Running balance`) each bar
+is the balance as it *stood* when that period ended: your initial balance, plus
+every day from `start_date` up to that point, so the first bar of a range
+already holds everything before it and the line goes on from where the range
+before it left off. Periods that have not happened yet add nothing, so the line
+stays flat at today's value instead of running on into the future. The footer
+then reads `carried in` — the balance the range opened on — `end`, the last bar
+on show, and `change`, what the whole range did to the balance. There is no
+best or worst period to name: every bar already holds the ones before it. The
+`net`, `target` and `balance` line underneath is the range's own either way.
 
 The panel below it is about work alone: one bar per project with its hours and
 its share of the range, and `net` — the net time in the range — under them. The

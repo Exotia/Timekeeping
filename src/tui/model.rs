@@ -14,8 +14,8 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 use super::components;
 use super::ids::Id;
 use super::msg::{
-    Confirm, DayData, FormData, MonthData, Msg, RangeKind, SettingsData, StatsData, StoreCmd,
-    StoreReply, UserEvent,
+    ChartMode, Confirm, DayData, FormData, MonthData, Msg, RangeKind, SettingsData, StatsData,
+    StoreCmd, StoreReply, UserEvent,
 };
 use super::theme::Theme;
 use super::view::chrome;
@@ -67,6 +67,10 @@ pub struct Model {
     /// `stats_range` period this day falls in. `[` and `]` move it by whole
     /// periods, `t` brings it back to today.
     pub stats_anchor: NaiveDate,
+    /// What the statistics chart's bars measure; `r` flips it. It belongs to the
+    /// session, not to a range: walking to another period keeps the view the
+    /// reader asked for.
+    pub chart_mode: ChartMode,
 }
 
 /// State of the open clock-in overlay: whether submitting it switches the running
@@ -654,6 +658,14 @@ impl Model {
                 self.stats = None;
                 self.load_stats();
             }
+            // Nothing has to be loaded again: both modes are drawn from the
+            // range that is already in hand.
+            Msg::ToggleChartMode => {
+                self.chart_mode = match self.chart_mode {
+                    ChartMode::PerPeriod => ChartMode::Running,
+                    ChartMode::Running => ChartMode::PerPeriod,
+                };
+            }
             // Filled in by Tasks 15–18.
             // --- day editor (Task 15) ---
             Msg::OpenDay => {
@@ -900,6 +912,7 @@ impl Model {
                 ("1-4", "range"),
                 ("[ ]", "shift"),
                 ("t", "today"),
+                ("r", "running"),
                 ("u", "units"),
                 ("Esc", "back"),
             ],
@@ -968,6 +981,7 @@ impl Model {
                 ("[ ]", "previous / next period"),
                 ("PgUp PgDn", "previous / next period"),
                 ("t", "back to today"),
+                ("r", "toggle per-period / running balance"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
             ],
@@ -1046,6 +1060,7 @@ pub mod testing {
             clock_picker: None,
             hours: HoursFormat::Hm,
             stats_anchor: today,
+            chart_mode: ChartMode::default(),
         };
         (m, rx)
     }
@@ -1343,6 +1358,7 @@ mod tests {
             ("1-4", "range"),
             ("[ ]", "shift"),
             ("t", "today"),
+            ("r", "running"),
             ("u", "units"),
             ("Esc", "back"),
         ] {
@@ -1351,12 +1367,39 @@ mod tests {
         // The whole set fits the minimum terminal, so nothing has to be trimmed.
         assert_eq!(m.key_hints_for(80), hints);
         let help = m.help_keys();
-        for key in ["[ ]", "t"] {
+        for key in ["[ ]", "t", "r"] {
             assert!(
                 help.iter().any(|(k, _)| *k == key),
                 "{key} missing from the help"
             );
         }
+    }
+
+    /// `r` flips the chart between the per-period bars and the running balance.
+    /// The mode is the reader's for the session: walking to another period, to
+    /// another range length, or away from the screen and back keeps it.
+    #[test]
+    fn r_toggles_the_chart_mode_and_navigation_keeps_it() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        m.update(Msg::OpenStats);
+        assert_eq!(m.chart_mode, ChartMode::PerPeriod);
+        m.redraw = false;
+        m.update(Msg::ToggleChartMode);
+        assert_eq!(m.chart_mode, ChartMode::Running);
+        assert!(m.redraw, "the chart has to be repainted");
+        for msg in [
+            Msg::StatsRange(RangeKind::Week),
+            Msg::StatsShift(-1),
+            Msg::StatsToday,
+            Msg::Back,
+            Msg::OpenStats,
+        ] {
+            m.update(msg.clone());
+            assert_eq!(m.chart_mode, ChartMode::Running, "lost after {msg:?}");
+        }
+        m.update(Msg::ToggleChartMode);
+        assert_eq!(m.chart_mode, ChartMode::PerPeriod);
     }
 
     /// `[`, `]` and `t` walk the statistics screen through whole periods, and the

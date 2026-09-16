@@ -129,6 +129,9 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         clock_picker: None,
         hours,
         stats_anchor: now.date(),
+        // The chart opens on the per-period bars; `r` is what asks for the
+        // running balance, and it then holds for the session.
+        chart_mode: msg::ChartMode::default(),
     };
     model.load_month();
 

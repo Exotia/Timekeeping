@@ -304,6 +304,97 @@ fn stats_screen_80x24_year() {
     );
 }
 
+/// The statistics screen in running-balance mode at the documented minimum
+/// size: `r` gives the bars the balance as it stood at the end of each week,
+/// carried in from everything before the month, and the footer says where the
+/// line came in, where it ends and how far the month moved it.
+#[test]
+fn stats_screen_80x24_running_month() {
+    let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+    let (mut m, rx) = model(today);
+    m.rules.start_date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    // The month is the range the screen opens on; `r` asks for the running line.
+    m.update(tk::tui::msg::Msg::OpenStats);
+    m.update(tk::tui::msg::Msg::ToggleChartMode);
+    let (from, to) = match rx.try_iter().last().expect("a stats load") {
+        tk::tui::msg::StoreCmd::LoadStats { from, to, .. } => (from, to),
+        other => panic!("expected LoadStats, got {other:?}"),
+    };
+    let t = |h| chrono::NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+    let day = |dd, entries| Day {
+        date: NaiveDate::from_ymd_opt(2026, 9, dd).unwrap(),
+        kind: DayKind::Work,
+        entries,
+    };
+    let days = vec![
+        day(
+            1,
+            vec![Entry {
+                id: 1,
+                date: NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+                start: t(8),
+                end: t(17),
+                project: "Alpha".into(),
+                comment: String::new(),
+            }],
+        ),
+        // A Tuesday nobody booked: a whole target short.
+        day(8, vec![]),
+    ];
+    m.stats = Some(tk::tui::msg::StatsData {
+        from,
+        to,
+        days,
+        projects: vec![],
+        vacation_used_year: 3,
+        session_active: false,
+        // +02:24 on the books when September opens.
+        carried_in: tk::core::Minutes(144),
+    });
+    let out = rows(80, 24, |f| m.draw(f));
+    let joined = out.join("\n");
+    assert!(
+        out.iter().all(|r| r.chars().count() <= 80),
+        "a row overflows 80 columns:\n{joined}"
+    );
+    // Too short for all five weeks, so the chart cuts itself as it does in the
+    // per-period mode — the title says which chart it is all the same.
+    assert!(
+        out.iter().any(|r| r.contains("… Running balance")),
+        "the running chart's title is missing:\n{joined}"
+    );
+    assert!(
+        !out.iter().any(|r| r.contains("Balance per week")),
+        "the per-period title leaked into the running chart:\n{joined}"
+    );
+    // 144 carried in, +24 in the first week, a whole target lost in the second:
+    // the line ends at -05:00, having moved -07:24 over the month.
+    assert!(
+        out.iter().any(|r| r.contains("carried in +02:24")),
+        "the carried-in balance is missing:\n{joined}"
+    );
+    assert!(
+        out.iter()
+            .any(|r| r.contains("end -05:00") && r.contains("change -07:24")),
+        "the running footer is missing:\n{joined}"
+    );
+    // The range's own net, target and balance still sit under it.
+    assert!(
+        out.iter()
+            .any(|r| r.contains("net ") && r.contains("target ") && r.contains("balance ")),
+        "the range footer is missing:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("r running")),
+        "the key hint for the mode is missing:\n{joined}"
+    );
+    assert_eq!(
+        out.iter().filter(|r| r.starts_with('╭')).count(),
+        4,
+        "a panel lost its top border:\n{joined}"
+    );
+}
+
 /// The statistics screen after one `[`: the month before the one today sits in,
 /// loaded and drawn through the model's own keys.
 #[test]
