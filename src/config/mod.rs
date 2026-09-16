@@ -6,7 +6,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use toml_edit::{DocumentMut, Item, value};
 
-use crate::core::{BreakTier, HolidayCalendar, Minutes, Rules};
+use crate::core::{BreakTier, HolidayCalendar, HoursFormat, Minutes, Rules};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -26,6 +26,7 @@ break_gap_minutes = 30             # a recorded pause of at least this long canc
 vacation_days_per_year = 30
 week_starts_on = "monday"          # display only
 theme = "dark"                     # "dark" | "light" | "purple"
+hours_format = "hm"                # "hm" (07:48) | "decimal" (7.80h)
 extra_holidays = []                # e.g. ["2026-12-24", "2026-12-31"]
 
 [[break_tiers]]                    # ascending; last matching tier applies
@@ -62,6 +63,8 @@ pub struct Config {
     pub week_starts_on: String,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_hours_format")]
+    pub hours_format: String,
     #[serde(default)]
     pub break_tiers: Vec<BreakTierCfg>,
     #[serde(default)]
@@ -81,6 +84,9 @@ fn default_week_start() -> String {
 }
 fn default_theme() -> String {
     "dark".into()
+}
+fn default_hours_format() -> String {
+    HoursFormat::default().as_str().into()
 }
 
 fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
@@ -106,6 +112,9 @@ impl Config {
                 "theme",
                 "must be \"dark\", \"light\" or \"purple\"",
             ));
+        }
+        if HoursFormat::parse(&self.hours_format).is_none() {
+            return Err(invalid("hours_format", "must be \"hm\" or \"decimal\""));
         }
         if !matches!(self.week_starts_on.as_str(), "monday" | "sunday") {
             return Err(invalid(
@@ -156,19 +165,25 @@ impl Config {
         }
     }
 
+    /// How durations are written. `validate` has already refused anything else.
+    pub fn hours_format(&self) -> HoursFormat {
+        HoursFormat::parse(&self.hours_format).unwrap_or_default()
+    }
+
     pub fn calendar(&self) -> HolidayCalendar {
         HolidayCalendar::new(self.extra_holidays.clone())
     }
 }
 
-/// The four settings `tk config` and the TUI settings overlay may change. `None`
-/// leaves the key in the file exactly as it is.
+/// The settings `tk config`, the TUI settings overlay and the `u` key may change.
+/// `None` leaves the key in the file exactly as it is.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ConfigPatch {
     pub start_date: Option<NaiveDate>,
     pub initial_balance_minutes: Option<i32>,
     pub daily_target_minutes: Option<i32>,
     pub vacation_days_per_year: Option<u32>,
+    pub hours_format: Option<HoursFormat>,
 }
 
 /// Write `v` to a root key, keeping every byte of formatting around it.
@@ -228,6 +243,9 @@ impl Config {
         }
         if let Some(v) = patch.vacation_days_per_year {
             set_root(&mut doc, "vacation_days_per_year", value(v as i64));
+        }
+        if let Some(h) = patch.hours_format {
+            set_root(&mut doc, "hours_format", value(h.as_str()));
         }
         let new_text = doc.to_string();
         let cfg = Config::from_toml(&new_text)?;
@@ -318,6 +336,67 @@ mod tests {
             Err(ConfigError::Parse(_)) | Err(ConfigError::Validation { .. }) => {}
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn hours_format_defaults_to_hm_and_only_takes_the_two_spellings() {
+        let c = Config::from_toml(DEFAULT_TOML).unwrap();
+        assert_eq!(c.hours_format, "hm");
+        assert_eq!(c.hours_format(), HoursFormat::Hm);
+        // The key may be missing from a hand-written file entirely.
+        let without: String = DEFAULT_TOML
+            .lines()
+            .filter(|l| !l.starts_with("hours_format"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            Config::from_toml(&without).unwrap().hours_format(),
+            HoursFormat::Hm
+        );
+        let dec = DEFAULT_TOML.replace("hours_format = \"hm\"", "hours_format = \"decimal\"");
+        assert_eq!(
+            Config::from_toml(&dec).unwrap().hours_format(),
+            HoursFormat::Decimal
+        );
+        let bad = DEFAULT_TOML.replace("hours_format = \"hm\"", "hours_format = \"industrial\"");
+        match Config::from_toml(&bad) {
+            Err(ConfigError::Validation { field, .. }) => assert_eq!(field, "hours_format"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_updates_round_trips_the_hours_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("h");
+        let c = Config::write_updates(
+            &home,
+            &ConfigPatch {
+                hours_format: Some(HoursFormat::Decimal),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(c.hours_format(), HoursFormat::Decimal);
+        let written = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert_eq!(
+            written,
+            DEFAULT_TOML.replace("hours_format = \"hm\"", "hours_format = \"decimal\"")
+        );
+        // And back again.
+        let c = Config::write_updates(
+            &home,
+            &ConfigPatch {
+                hours_format: Some(HoursFormat::Hm),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(c.hours_format(), HoursFormat::Hm);
+        assert_eq!(
+            std::fs::read_to_string(home.join("config.toml")).unwrap(),
+            DEFAULT_TOML
+        );
     }
 
     #[test]

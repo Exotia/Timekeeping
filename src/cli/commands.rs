@@ -6,8 +6,8 @@ use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 use super::{Command, Ctx, ProjectAction};
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    DayKind, Minutes, TodayCtx, day_stats, parse_date, parse_time_range, provisional_net_for,
-    running_balance, running_minutes,
+    DayKind, HoursFormat, Minutes, TodayCtx, day_stats, parse_date, parse_time_range,
+    provisional_net_for, running_balance, running_minutes,
 };
 
 pub fn now_local() -> NaiveDateTime {
@@ -28,6 +28,7 @@ pub fn balance_as_of(ctx: &Ctx, today: NaiveDate, clocked_in: bool) -> anyhow::R
 
 pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
     let today = now.date();
+    let f = ctx.config.hours_format();
     let rules = ctx.config.rules();
     let session = ctx.store.session()?;
     let balance = balance_as_of(ctx, today, session.is_some())?;
@@ -47,10 +48,10 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
             format!(
                 "⏱ {}{} (in {}) · today {} · balance {}",
                 project,
-                running.hhmm(),
+                running.fmt_unsigned(f),
                 s.start.format("%H:%M"),
-                net,
-                balance
+                net.fmt_signed(f),
+                balance.fmt_signed(f)
             )
         }
         None => {
@@ -68,7 +69,11 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
                 )
                 .net
             };
-            format!("not clocked in · today {net} · balance {balance}")
+            format!(
+                "not clocked in · today {} · balance {}",
+                net.fmt_signed(f),
+                balance.fmt_signed(f)
+            )
         }
     })
 }
@@ -76,6 +81,8 @@ pub fn status_line(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<String> {
 pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
     let now = now_local();
     let today = now.date();
+    // How this run spells durations. Export is deliberately not part of it.
+    let f: HoursFormat = ctx.config.hours_format();
     match cmd {
         Command::In { force, project } => {
             // An open session is a more useful complaint than a missing project, so it
@@ -111,7 +118,7 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 e.start.format("%H:%M"),
                 e.end.format("%H:%M"),
                 e.project,
-                e.duration(),
+                e.duration().fmt_signed(f),
                 s.project.as_deref().unwrap_or(&project),
                 s.start.format("%H:%M")
             )?;
@@ -140,9 +147,9 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 e.start.format("%H:%M"),
                 e.end.format("%H:%M"),
                 e.project,
-                e.duration(),
-                stats.net,
-                balance_as_of(ctx, today, false)?
+                e.duration().fmt_signed(f),
+                stats.net.fmt_signed(f),
+                balance_as_of(ctx, today, false)?.fmt_signed(f)
             )?;
         }
         Command::Status => writeln!(out, "{}", status_line(ctx, now)?)?,
@@ -175,8 +182,8 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 entry.start.format("%H:%M"),
                 entry.end.format("%H:%M"),
                 entry.project,
-                entry.duration(),
-                st.net
+                entry.duration().fmt_signed(f),
+                st.net.fmt_signed(f)
             )?;
         }
         Command::Day {
@@ -246,6 +253,7 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             balance,
             target,
             vacation,
+            hours,
         } => {
             let mut patch = ConfigPatch::default();
             if let Some(s) = &start {
@@ -268,6 +276,12 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 );
             }
             patch.vacation_days_per_year = vacation;
+            if let Some(h) = &hours {
+                patch.hours_format = Some(
+                    HoursFormat::parse(h)
+                        .ok_or_else(|| anyhow!("--hours '{h}': expected \"hm\" or \"decimal\""))?,
+                );
+            }
             if patch == ConfigPatch::default() {
                 out.write_all(config_table(&ctx.config).as_bytes())?;
             } else {
@@ -348,16 +362,21 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The four settings `tk config` shows, one per line, label padded to 16.
+/// The five settings `tk config` shows, one per line, label padded to 16.
 fn config_table(c: &Config) -> String {
+    let f = c.hours_format();
     [
         ("start_date", c.start_date.to_string()),
         (
             "initial_balance",
-            Minutes(c.initial_balance_minutes).to_string(),
+            Minutes(c.initial_balance_minutes).fmt_signed(f),
         ),
-        ("daily_target", Minutes(c.daily_target_minutes).hhmm()),
+        (
+            "daily_target",
+            Minutes(c.daily_target_minutes).fmt_unsigned(f),
+        ),
         ("vacation_days", c.vacation_days_per_year.to_string()),
+        ("hours_format", c.hours_format.clone()),
     ]
     .iter()
     .map(|(k, v)| format!("{k:<16} {v}\n"))

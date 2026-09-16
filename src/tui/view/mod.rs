@@ -10,11 +10,12 @@ use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders};
 
 use super::theme::Theme;
-use crate::core::Minutes;
+use crate::core::{HoursFormat, Minutes};
 use tuirealm::ratatui::style::Color;
 
-pub fn minutes_span(m: Minutes, theme: &Theme) -> Span<'static> {
-    Span::styled(m.to_string(), theme.minutes_style(m))
+/// A signed duration, colored by its sign and spelled the way `f` asks for.
+pub fn minutes_span(m: Minutes, f: HoursFormat, theme: &Theme) -> Span<'static> {
+    Span::styled(m.fmt_signed(f), theme.minutes_style(m))
 }
 
 pub fn chip(text: &str, color: Color) -> Span<'static> {

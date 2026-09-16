@@ -95,6 +95,77 @@ fn month_screen_100x30_and_80x24() {
     );
 }
 
+/// Decimal hours are the widest a duration ever gets, so the 80×24 minimum is
+/// where the month table would break first if a column were too narrow.
+#[test]
+fn month_screen_80x24_in_decimal_hours() {
+    let (today, days) = september_2026();
+    let (mut m, _rx) = model(today);
+    m.selected = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+    m.month = Some(month_data(today, days, None));
+    m.hours = tk::core::HoursFormat::Decimal;
+
+    let out = rows(80, 24, |f| m.draw(f));
+    let joined = out.join("\n");
+    assert!(
+        out.iter().all(|r| r.chars().count() <= 80),
+        "a row overflows 80 columns:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("Mon 14")),
+        "selected day row missing:\n{joined}"
+    );
+    // 9:00–17:00 is 8h gross; 48 minutes of it go to the break tier.
+    assert!(
+        out.iter().any(|r| r.contains("+8.00h")),
+        "the entry's gross:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("+7.20h")),
+        "the day's net:\n{joined}"
+    );
+    assert!(
+        !out.iter().any(|r| r.contains("08:00")),
+        "an h:mm duration leaked into decimal mode:\n{joined}"
+    );
+    // Every panel keeps its frame: the table and the month summary.
+    assert_eq!(
+        out.iter().filter(|r| r.starts_with('╭')).count(),
+        2,
+        "a panel lost its top border:\n{joined}"
+    );
+}
+
+/// The statistics screen at the same size, in decimal, on the widest range.
+#[test]
+fn stats_screen_80x24_year_in_decimal_hours() {
+    let (mut m, _rx) = stats_year_model();
+    m.hours = tk::core::HoursFormat::Decimal;
+    let out = rows(80, 24, |f| m.draw(f));
+    let joined = out.join("\n");
+    assert!(
+        out.iter().all(|r| r.chars().count() <= 80),
+        "a row overflows 80 columns:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("Balance per month")),
+        "chart panel missing:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("h")),
+        "no decimal hours anywhere:\n{joined}"
+    );
+    assert!(
+        out.iter().any(|r| r.contains("-7.80h")),
+        "the month that is a whole target short:\n{joined}"
+    );
+    assert_eq!(
+        out.iter().filter(|r| r.starts_with('╭')).count(),
+        4,
+        "a panel lost its top border:\n{joined}"
+    );
+}
+
 #[test]
 fn key_hints_fit_the_minimum_terminal() {
     let (today, days) = september_2026();
@@ -118,13 +189,13 @@ fn key_hints_fit_the_minimum_terminal() {
     }
 }
 
-/// The statistics screen at the documented minimum size, on the year range: the
-/// chart cannot show all twelve months there, so it must cut itself down instead
-/// of spilling out of its frame.
-#[test]
-fn stats_screen_80x24_year() {
+/// A model parked on the statistics screen over the whole of 2026.
+fn stats_year_model() -> (
+    tk::tui::model::Model,
+    std::sync::mpsc::Receiver<tk::tui::msg::StoreCmd>,
+) {
     let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-    let (mut m, _rx) = model(today);
+    let (mut m, rx) = model(today);
     m.rules.start_date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     m.screen = tk::tui::model::Screen::Stats;
     m.stats_range = tk::tui::msg::RangeKind::Year;
@@ -165,7 +236,15 @@ fn stats_screen_80x24_year() {
         vacation_used_year: 3,
         session_active: false,
     });
+    (m, rx)
+}
 
+/// The statistics screen at the documented minimum size, on the year range: the
+/// chart cannot show all twelve months there, so it must cut itself down instead
+/// of spilling out of its frame.
+#[test]
+fn stats_screen_80x24_year() {
+    let (m, _rx) = stats_year_model();
     let out = rows(80, 24, |f| m.draw(f));
     let joined = out.join("\n");
     assert!(
