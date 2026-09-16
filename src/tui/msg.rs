@@ -7,6 +7,8 @@ use crate::store::Session;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RangeKind {
+    /// The ISO week (Monday … Sunday) `today` falls in.
+    Week,
     ThisMonth,
     LastMonth,
     Quarter,

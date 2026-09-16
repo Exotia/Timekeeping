@@ -287,10 +287,11 @@ restart.
 
 | Key | Action |
 | --- | --- |
-| `1` | This month |
-| `2` | Last month |
-| `3` | This quarter |
-| `4` | This year |
+| `1` | This week (Monday … Sunday) |
+| `2` | This month |
+| `3` | Last month |
+| `4` | This quarter |
+| `5` | This year |
 | `?` | Help |
 | `Esc`, `q` | Back to the month view |
 

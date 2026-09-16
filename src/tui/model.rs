@@ -843,10 +843,11 @@ impl Model {
                 ("Esc", "back"),
             ],
             Screen::Stats => &[
-                ("1", "month"),
-                ("2", "last month"),
-                ("3", "quarter"),
-                ("4", "year"),
+                ("1", "week"),
+                ("2", "month"),
+                ("3", "last month"),
+                ("4", "quarter"),
+                ("5", "year"),
                 ("Esc", "back"),
             ],
         }
@@ -901,7 +902,14 @@ impl Model {
                 ("← →", "change day type"),
                 ("Esc", "back"),
             ],
-            Screen::Stats => &[("1 2 3 4", "range"), ("Esc", "back")],
+            Screen::Stats => &[
+                ("1", "this week"),
+                ("2", "this month"),
+                ("3", "last month"),
+                ("4", "this quarter"),
+                ("5", "this year"),
+                ("Esc", "back"),
+            ],
         }
     }
 
