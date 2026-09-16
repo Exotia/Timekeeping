@@ -28,6 +28,9 @@ pub enum Command {
         /// Replace an existing clock-in
         #[arg(long)]
         force: bool,
+        /// Project to work on (default: the last one used)
+        #[arg(short, long)]
+        project: Option<String>,
     },
     /// Clock out and record the entry
     Out {

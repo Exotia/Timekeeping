@@ -362,15 +362,111 @@ mod tests {
     fn session_lifecycle() {
         let s = Store::open_in_memory().unwrap();
         assert!(s.session().unwrap().is_none());
-        s.clock_in(d(2026, 9, 15), t(8, 12)).unwrap();
+        s.clock_in(d(2026, 9, 15), t(8, 12), "Alpha").unwrap();
         let sess = s.session().unwrap().unwrap();
         assert_eq!(sess.start, t(8, 12));
+        // The clock-in records what is being worked on, so clocking out needs no guess.
+        assert_eq!(sess.project.as_deref(), Some("Alpha"));
         assert!(matches!(
-            s.clock_in(d(2026, 9, 15), t(9, 0)),
+            s.clock_in(d(2026, 9, 15), t(9, 0), "Beta"),
             Err(StoreError::Constraint(_))
         ));
         s.clear_session().unwrap();
         assert!(s.session().unwrap().is_none());
+    }
+
+    #[test]
+    fn clock_out_books_the_session_project_and_clears_the_session() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        // Nothing open: there is nothing to book.
+        assert!(matches!(
+            s.clock_out(t(9, 0), ""),
+            Err(StoreError::Constraint(_))
+        ));
+        s.clock_in(day, t(8, 12), "Alpha").unwrap();
+        let e = s.clock_out(t(10, 30), "review").unwrap();
+        assert_eq!((e.date, e.start, e.end), (day, t(8, 12), t(10, 30)));
+        assert_eq!(e.project, "Alpha");
+        assert_eq!(e.comment, "review");
+        assert!(s.session().unwrap().is_none());
+        assert_eq!(s.entries_on(day).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clock_out_without_a_session_project_falls_back_to_the_last_used_one() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.add_entry(d(2026, 9, 14), t(9, 0), t(10, 0), "Beta", "")
+            .unwrap();
+        s.clock_in(day, t(8, 0), "Alpha").unwrap();
+        // A session left behind by an older `tk`, which did not record a project.
+        s.conn()
+            .execute("UPDATE session SET project_id = NULL", [])
+            .unwrap();
+        assert_eq!(s.clock_out(t(9, 0), "").unwrap().project, "Beta");
+
+        // With no entry to learn from either, the clock-out says so and keeps the session.
+        let s = Store::open_in_memory().unwrap();
+        s.clock_in(day, t(8, 0), "Alpha").unwrap();
+        s.conn()
+            .execute("UPDATE session SET project_id = NULL", [])
+            .unwrap();
+        let err = s.clock_out(t(9, 0), "").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Constraint(m) if m.contains("no project")),
+            "{err}"
+        );
+        assert!(s.session().unwrap().is_some(), "the session is untouched");
+        assert!(s.entries_on(day).unwrap().is_empty());
+    }
+
+    #[test]
+    fn switch_project_books_the_old_one_and_opens_the_new_session() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 15);
+        s.clock_in(day, t(8, 12), "Alpha").unwrap();
+        let (e, sess) = s.switch_project(t(10, 30), "Beta", "morning").unwrap();
+        assert_eq!(
+            (e.project.as_str(), e.start, e.end),
+            ("Alpha", t(8, 12), t(10, 30))
+        );
+        assert_eq!(e.comment, "morning");
+        // The new session starts exactly where the booked entry ends.
+        assert_eq!((sess.date, sess.start), (day, t(10, 30)));
+        assert_eq!(sess.project.as_deref(), Some("Beta"));
+
+        // Switching to what is already running is refused, and changes nothing.
+        let err = s.switch_project(t(11, 0), "Beta", "").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Constraint(m) if m.contains("already on")),
+            "{err}"
+        );
+        assert_eq!(s.entries_on(day).unwrap().len(), 1);
+        assert_eq!(s.session().unwrap().unwrap().start, t(10, 30));
+
+        // Switching in the same minute as the clock-in: the entry is one minute long
+        // and the next session starts after it, so the two can never overlap.
+        let (e2, sess2) = s.switch_project(t(10, 30), "Gamma", "").unwrap();
+        assert_eq!((e2.start, e2.end), (t(10, 30), t(10, 31)));
+        assert_eq!(sess2.start, t(10, 31));
+        assert_eq!(sess2.project.as_deref(), Some("Gamma"));
+        let list = s.entries_on(day).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list[0].end <= list[1].start, "{list:?}");
+
+        // Clocking out inside the minute the switch skipped forward to books that one
+        // minute, not a shift running all the way back round the clock.
+        let e3 = s.clock_out(t(10, 30), "").unwrap();
+        assert_eq!((e3.start, e3.end), (t(10, 31), t(10, 32)));
+        assert_eq!(e3.duration(), crate::core::Minutes(1));
+
+        // Nothing open at all is a plain "not clocked in".
+        s.clear_session().unwrap();
+        assert!(matches!(
+            s.switch_project(t(12, 0), "Beta", ""),
+            Err(StoreError::Constraint(_))
+        ));
     }
 
     #[test]

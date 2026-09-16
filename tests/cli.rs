@@ -79,8 +79,14 @@ fn add_day_and_status_and_export() {
 fn clock_in_and_out() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
+    // A fresh home has no project to fall back on, so the first clock-in names one.
     tk(home)
         .arg("in")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no project"));
+    tk(home)
+        .args(["in", "-p", "Beta"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Clocked in"));

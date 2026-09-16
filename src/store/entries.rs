@@ -65,18 +65,29 @@ impl Store {
         project: &str,
         comment: &str,
     ) -> StoreResult<Entry> {
-        self.in_write_tx(|| {
-            self.ensure_work_day(date)?;
-            // No write path may store a zero-length entry: it would read back as 24 hours.
-            check_range(start, end)?;
-            check_overlap(&self.entries_on(date)?, start, end, None)?;
-            let p = self.get_or_create_project(project)?;
-            self.conn().execute(
-                "INSERT INTO entries (date, start_min, end_min, project_id, comment) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![date_str(date), minutes_of(start), minutes_of(end), p.id, comment.trim()],
-            )?;
-            self.entry(self.conn().last_insert_rowid())
-        })
+        self.in_write_tx(|| self.add_entry_locked(date, start, end, project, comment))
+    }
+
+    /// The body of [`Store::add_entry`], without the transaction around it, so that a
+    /// caller already inside one (the clock-out path) can book an entry as part of it.
+    pub(crate) fn add_entry_locked(
+        &self,
+        date: NaiveDate,
+        start: NaiveTime,
+        end: NaiveTime,
+        project: &str,
+        comment: &str,
+    ) -> StoreResult<Entry> {
+        self.ensure_work_day(date)?;
+        // No write path may store a zero-length entry: it would read back as 24 hours.
+        check_range(start, end)?;
+        check_overlap(&self.entries_on(date)?, start, end, None)?;
+        let p = self.get_or_create_project(project)?;
+        self.conn().execute(
+            "INSERT INTO entries (date, start_min, end_min, project_id, comment) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![date_str(date), minutes_of(start), minutes_of(end), p.id, comment.trim()],
+        )?;
+        self.entry(self.conn().last_insert_rowid())
     }
 
     pub fn update_entry(

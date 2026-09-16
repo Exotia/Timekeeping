@@ -11,9 +11,7 @@ use tuirealm::listener::{PollAsync, PortError, PortResult};
 
 use super::msg::{DayData, MonthData, StatsData, StoreCmd, StoreReply, UserEvent};
 use crate::cli::Ctx;
-use crate::core::{
-    DayKind, Minutes, TodayCtx, clock_out_end, day_stats, is_working_day, running_balance,
-};
+use crate::core::{DayKind, Minutes, TodayCtx, day_stats, is_working_day, running_balance};
 
 pub struct Worker {
     pub tx: Sender<StoreCmd>,
@@ -192,23 +190,17 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             ))
         }
         StoreCmd::ClockIn(date, t) => {
-            ctx.store.clock_in(date, t)?;
-            StoreReply::Changed(format!("Clocked in at {}", t.format("%H:%M")))
-        }
-        StoreCmd::ClockOut { project, comment } => {
-            let s = ctx
-                .store
-                .session()?
-                .ok_or_else(|| anyhow::anyhow!("not clocked in"))?;
-            let project = match project.or(ctx.store.last_used_project()?) {
+            let project = match ctx.store.last_used_project()? {
                 Some(p) => p,
                 None => anyhow::bail!("no project yet; add the entry from the day editor"),
             };
-            let end = clock_out_end(s.start, now.time());
+            ctx.store.clock_in(date, t, &project)?;
+            StoreReply::Changed(format!("Clocked in at {}", t.format("%H:%M")))
+        }
+        StoreCmd::ClockOut { project, comment } => {
             let e = ctx
                 .store
-                .add_entry(s.date, s.start, end, &project, &comment)?;
-            ctx.store.clear_session()?;
+                .clock_out_with(now.time(), project.as_deref(), &comment)?;
             StoreReply::Changed(format!(
                 "Clocked out: {}–{} {} ({})",
                 e.start.format("%H:%M"),

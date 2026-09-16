@@ -6,8 +6,8 @@ use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 use super::{Command, Ctx, ProjectAction};
 use crate::config::{Config, ConfigPatch};
 use crate::core::{
-    DayKind, Minutes, TodayCtx, clock_out_end, day_stats, parse_date, parse_time_range,
-    provisional_net_with, running_balance, running_minutes,
+    DayKind, Minutes, TodayCtx, day_stats, parse_date, parse_time_range, provisional_net_with,
+    running_balance, running_minutes,
 };
 
 pub fn now_local() -> NaiveDateTime {
@@ -70,35 +70,38 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
     let now = now_local();
     let today = now.date();
     match cmd {
-        Command::In { force } => {
+        Command::In { force, project } => {
             if force {
                 ctx.store.clear_session()?;
             }
+            // A session that is already open is the more useful complaint, so it comes
+            // before the one about a missing project. The store checks it again, under
+            // its own lock, so a concurrent `tk in` is still refused.
+            if let Some(s) = ctx.store.session()? {
+                bail!(
+                    "already clocked in since {} {}",
+                    s.date,
+                    s.start.format("%H:%M")
+                );
+            }
             let t = now.time().with_second(0).unwrap_or(now.time());
-            ctx.store.clock_in(today, t)?;
+            let project = match project.or(ctx.store.last_used_project()?) {
+                Some(p) => p,
+                None => bail!("no project yet; pass --project NAME"),
+            };
+            ctx.store.clock_in(today, t, &project)?;
             writeln!(out, "Clocked in at {}", t.format("%H:%M"))?;
         }
         Command::Out { project, comment } => {
-            let s = ctx
-                .store
-                .session()?
-                .ok_or_else(|| anyhow!("not clocked in"))?;
-            let project = match project.or(ctx.store.last_used_project()?) {
-                Some(p) => p,
-                None => bail!("no project given and none used before; pass --project NAME"),
-            };
-            let end = clock_out_end(s.start, now.time());
-            let e = ctx.store.add_entry(
-                s.date,
-                s.start,
-                end,
-                &project,
+            // One transaction in the store: the entry and the cleared session, or neither.
+            let e = ctx.store.clock_out_with(
+                now.time(),
+                project.as_deref(),
                 comment.as_deref().unwrap_or(""),
             )?;
-            ctx.store.clear_session()?;
             let stats = day_stats(
                 &ctx.store
-                    .days_in(s.date, s.date, &ctx.config.calendar())?
+                    .days_in(e.date, e.date, &ctx.config.calendar())?
                     .remove(0),
                 &ctx.config.rules(),
                 &ctx.config.calendar(),
@@ -390,6 +393,7 @@ mod tests {
             .clock_in(
                 NaiveDate::from_ymd_opt(2026, 9, 14).unwrap(),
                 NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                "Alpha",
             )
             .unwrap();
         let line = status_line(&c, dt(2026, 9, 15, 1, 0)).unwrap();

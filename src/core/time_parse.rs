@@ -10,10 +10,15 @@ use super::{CoreError, minutes_of};
 ///
 /// Clocking out at exactly 23:59 therefore yields 00:00, which core reads as a one-minute
 /// entry crossing midnight (`0 + 1440 - 1439 == 1`).
+///
+/// The minute *before* the start is the same case seen from the other side: a project
+/// switch inside one minute opens the next session on the following minute boundary,
+/// which the wall clock has not reached yet. Clocking out in that gap is a zero-length
+/// session, not a shift of 23 hours and 59 minutes.
 pub fn clock_out_end(start: NaiveTime, now: NaiveTime) -> NaiveTime {
     let end = NaiveTime::from_hms_opt(now.hour(), now.minute(), 0).unwrap_or(now);
-    if minutes_of(end) == minutes_of(start) {
-        return end.overflowing_add_signed(TimeDelta::minutes(1)).0;
+    if minutes_of(end) == minutes_of(start) || minutes_of(end) + 1 == minutes_of(start) {
+        return start.overflowing_add_signed(TimeDelta::minutes(1)).0;
     }
     end
 }
@@ -109,6 +114,15 @@ mod tests {
         let start = t(23, 59);
         let now = NaiveTime::from_hms_nano_opt(23, 59, 30, 0).unwrap();
         assert_eq!(clock_out_end(start, now), t(0, 0));
+        // (d) a session opened by a project switch inside one minute starts on the next
+        // minute boundary, which the clock has not reached yet. Clocking out in that
+        // gap is a zero-length entry, not a shift that ran round to the previous day.
+        assert_eq!(
+            clock_out_end(t(9, 10), NaiveTime::from_hms_nano_opt(9, 9, 42, 0).unwrap()),
+            t(9, 11)
+        );
+        // A full day apart is still a genuine (if unlikely) midnight crossing.
+        assert_eq!(clock_out_end(t(9, 10), t(9, 8)), t(9, 8));
     }
 
     #[test]
