@@ -10,7 +10,7 @@ use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Cell, Paragraph, Row as TRow, Table};
 
-use super::{bar, block, chip, minutes_span};
+use super::{bar, block, chip, kind_label, minutes_span};
 use crate::core::{
     DayKind, DayStats, HolidayCalendar, HoursFormat, Minutes, Rules, TodayCtx, day_stats,
 };
@@ -378,10 +378,16 @@ pub fn draw_table(
                         day_cell(*first),
                         Cell::from(Span::styled(
                             truncate(&e.project, 15),
-                            Style::default().fg(color),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
                         )),
-                        Cell::from(e.start.format("%H:%M").to_string()),
-                        Cell::from(e.end.format("%H:%M").to_string()),
+                        Cell::from(Span::styled(
+                            e.start.format("%H:%M").to_string(),
+                            Style::default().fg(t.text),
+                        )),
+                        Cell::from(Span::styled(
+                            e.end.format("%H:%M").to_string(),
+                            Style::default().fg(t.text),
+                        )),
                         Cell::from(Span::styled(
                             e.duration().fmt_signed(fmt),
                             Style::default().fg(t.text),
@@ -413,7 +419,7 @@ pub fn draw_table(
                         _ => String::new(),
                     };
                     banner(Line::from(vec![
-                        chip(&label, t.kind_color(&s.kind)),
+                        kind_label(&label, t.kind_color(&s.kind)),
                         Span::raw("  "),
                         Span::styled(extra, Style::default().fg(t.muted)),
                     ]))
@@ -517,8 +523,9 @@ mod tests {
     use super::*;
     use crate::core::{Day, DayKind, Entry, HolidayCalendar, Project, Rules, default_tiers};
     use crate::tui::theme::Theme;
-    use crate::tui::view::testing::{contains, render};
+    use crate::tui::view::testing::{contains, render, style_of};
     use chrono::{NaiveDate, NaiveTime};
+    use tuirealm::ratatui::style::Color;
 
     fn d(y: i32, m: u32, dd: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, dd).unwrap()
@@ -949,5 +956,92 @@ mod tests {
         assert!(contains(&rows, "target"));
         assert!(contains(&rows, "+09:42"));
         assert!(contains(&rows, "vacation 1"));
+    }
+    /// A day off is information, not an alarm: its label is plain text in the
+    /// kind's color, no filled chip. "missing" keeps its chip, that one is a
+    /// warning.
+    #[test]
+    fn non_work_kinds_lose_their_chip_but_missing_keeps_it() {
+        let (data, rules, cal) = fixture();
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        let t = Theme::dark();
+        let draw = |f: &mut Frame| {
+            draw_table(
+                f,
+                f.area(),
+                &t,
+                &v,
+                &data,
+                d(2026, 9, 14),
+                d(2026, 9, 15),
+                true,
+                HoursFormat::Hm,
+            )
+        };
+        let flex = style_of(100, 40, draw, "FLEX");
+        assert_eq!(flex.fg, Some(t.chip_flex));
+        assert!(matches!(flex.bg, None | Some(Color::Reset)), "{flex:?}");
+        assert!(!flex.add_modifier.contains(Modifier::BOLD));
+        let vacation = style_of(100, 40, draw, "VACATION");
+        assert_eq!(vacation.fg, Some(t.chip_vacation));
+        assert!(matches!(vacation.bg, None | Some(Color::Reset)));
+        let missing = style_of(100, 40, draw, "missing");
+        assert_eq!(missing.bg, Some(t.negative));
+    }
+
+    /// The project name is what a work day is about, so it carries the weight.
+    #[test]
+    fn work_day_project_name_is_bold_in_its_project_color() {
+        let (data, rules, cal) = fixture();
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        let t = Theme::dark();
+        let beta = style_of(
+            100,
+            40,
+            |f| {
+                draw_table(
+                    f,
+                    f.area(),
+                    &t,
+                    &v,
+                    &data,
+                    d(2026, 9, 14),
+                    d(2026, 9, 15),
+                    true,
+                    HoursFormat::Hm,
+                )
+            },
+            "Beta",
+        );
+        assert_eq!(beta.fg, Some(t.project_color(1)));
+        assert!(beta.add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// Start and end times are drawn in the theme's text color rather than
+    /// whatever the terminal defaults to.
+    #[test]
+    fn work_day_times_use_the_text_color() {
+        let (data, rules, cal) = fixture();
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        let t = Theme::dark();
+        let start = style_of(
+            100,
+            40,
+            |f| {
+                draw_table(
+                    f,
+                    f.area(),
+                    &t,
+                    &v,
+                    &data,
+                    d(2026, 9, 14),
+                    d(2026, 9, 15),
+                    true,
+                    HoursFormat::Hm,
+                )
+            },
+            "08:00",
+        );
+        assert_eq!(start.fg, Some(t.text));
     }
 }

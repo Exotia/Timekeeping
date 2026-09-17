@@ -28,6 +28,12 @@ pub fn chip(text: &str, color: Color) -> Span<'static> {
     )
 }
 
+/// A day-off label: plain text in the kind's color. Days off are information,
+/// not alarms, so they stay quieter than the work rows around them.
+pub fn kind_label(text: &str, color: Color) -> Span<'static> {
+    Span::styled(text.to_string(), Style::default().fg(color))
+}
+
 pub fn bar(frac: f64, width: u16, color: Color, theme: &Theme) -> Line<'static> {
     let filled = ((frac.clamp(0.0, 1.0)) * width as f64).round() as usize;
     let empty = (width as usize).saturating_sub(filled);
@@ -55,6 +61,7 @@ pub fn block(theme: &Theme, title: Option<&str>) -> Block<'static> {
 #[allow(dead_code)]
 pub(crate) mod testing {
     use tuirealm::ratatui::backend::TestBackend;
+    use tuirealm::ratatui::style::Style;
     use tuirealm::ratatui::{Frame, Terminal};
 
     /// Render with `f` into a WxH buffer and return the text rows (trailing spaces trimmed).
@@ -72,5 +79,21 @@ pub(crate) mod testing {
 
     pub fn contains(rows: &[String], needle: &str) -> bool {
         rows.iter().any(|r| r.contains(needle))
+    }
+
+    /// Render with `f` and return the style of the first cell of the first
+    /// occurrence of `needle`; panics when the text is not on screen.
+    pub fn style_of(w: u16, h: u16, f: impl FnOnce(&mut Frame), needle: &str) -> Style {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(f).unwrap();
+        let buf = term.backend().buffer();
+        for y in 0..h {
+            let row: String = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            if let Some(byte) = row.find(needle) {
+                let x = row[..byte].chars().count() as u16;
+                return buf[(x, y)].style();
+            }
+        }
+        panic!("{needle:?} was not rendered");
     }
 }

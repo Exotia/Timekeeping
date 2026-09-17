@@ -7,7 +7,7 @@ use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Cell, Paragraph, Row, Table};
 
-use super::{block, chip, minutes_span};
+use super::{block, kind_label, minutes_span};
 use crate::core::{DayKind, DayStats, HoursFormat, TodayCtx, day_stats};
 use crate::tui::model::Model;
 use crate::tui::msg::DayData;
@@ -222,7 +222,7 @@ pub fn draw_day(
     if data.day.kind != DayKind::Work {
         foot_line.insert(
             0,
-            chip(
+            kind_label(
                 &data.day.kind.display_name().to_uppercase(),
                 t.kind_color(&data.day.kind),
             ),
@@ -244,8 +244,9 @@ mod tests {
     };
     use crate::tui::msg::DayData;
     use crate::tui::theme::Theme;
-    use crate::tui::view::testing::{contains, render};
+    use crate::tui::view::testing::{contains, render, style_of};
     use chrono::{NaiveDate, NaiveTime};
+    use tuirealm::ratatui::style::Color;
 
     fn t(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -488,5 +489,50 @@ mod tests {
         // hours exactly is under the first tier: nothing is deducted.
         assert!(contains(&rows, "break -00:00"));
         assert!(contains(&rows, "net +06:00"));
+    }
+    /// The footer names a day off in plain colored text, the same way the
+    /// month view does, not in a filled chip.
+    #[test]
+    fn footer_names_a_day_off_in_plain_colored_text() {
+        let date = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        let day = Day {
+            date,
+            kind: DayKind::Vacation,
+            entries: vec![],
+        };
+        let stats = day_stats(
+            &day,
+            &rules(date),
+            &HolidayCalendar::default(),
+            &TodayCtx {
+                today: date.succ_opt().unwrap(),
+                clocked_in: false,
+            },
+        );
+        let data = DayData {
+            day,
+            projects: vec![],
+        };
+        let t = Theme::dark();
+        let label = style_of(
+            100,
+            24,
+            |f| {
+                draw_day(
+                    f,
+                    f.area(),
+                    &t,
+                    &data,
+                    &stats,
+                    0,
+                    &KIND_CYCLE,
+                    1,
+                    HoursFormat::Hm,
+                )
+            },
+            "VACATION",
+        );
+        assert_eq!(label.fg, Some(t.chip_vacation));
+        assert!(matches!(label.bg, None | Some(Color::Reset)), "{label:?}");
     }
 }
