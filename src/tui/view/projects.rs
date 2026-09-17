@@ -96,9 +96,13 @@ pub fn draw_table(
     f.render_widget(table, table_area);
 
     let archived = data.projects.iter().filter(|p| p.archived).count();
+    let total = data.projects.len();
     f.render_widget(
         Paragraph::new(Span::styled(
-            format!(" {} projects · {archived} archived", data.projects.len()),
+            format!(
+                " {total} project{} · {archived} archived",
+                if total == 1 { "" } else { "s" }
+            ),
             Style::default().fg(t.muted),
         )),
         count_area,
@@ -148,6 +152,14 @@ mod tests {
             "{rows:?}"
         );
         assert!(contains(&rows, "2 projects · 1 archived"), "{rows:?}");
+        let bg = style_of(
+            80,
+            20,
+            |f| draw_table(f, f.area(), &t, &data, 1, HoursFormat::Hm),
+            "Old",
+        )
+        .bg;
+        assert_eq!(bg, Some(t.bg_selected), "the cursor row is highlighted");
         let alpha = style_of(
             80,
             20,
@@ -163,5 +175,16 @@ mod tests {
             "Old",
         );
         assert_eq!(old.fg, Some(t.muted));
+    }
+
+    #[test]
+    fn a_single_project_count_line_is_singular() {
+        let t = Theme::dark();
+        let mut data = data();
+        data.projects.truncate(1);
+        let rows = render(80, 20, |f| {
+            draw_table(f, f.area(), &t, &data, 0, HoursFormat::Hm)
+        });
+        assert!(contains(&rows, "1 project · 0 archived"), "{rows:?}");
     }
 }

@@ -895,6 +895,14 @@ impl Model {
                 // here, where only the loaded month is in hand.
                 if let Some(a) = self.anchor {
                     let (from, to) = (a.min(self.selected), a.max(self.selected));
+                    let has_weekday = from
+                        .iter_days()
+                        .take_while(|d| *d <= to)
+                        .any(crate::core::is_working_day);
+                    if !has_weekday {
+                        self.set_status("No weekdays in the range", true);
+                        return;
+                    }
                     self.open_confirm(Confirm::SetKindRange { from, to, kind });
                     return;
                 }
@@ -1273,14 +1281,14 @@ impl Model {
             Msg::ProjectsAdd => self.open_prompt("New project".into(), "", PromptKind::AddProject),
             Msg::PromptChanged => {}
             Msg::PromptSubmit(text) => {
+                let Some(kind) = self.prompt.clone() else {
+                    return;
+                };
                 let name = text.trim().to_string();
                 if name.is_empty() {
                     self.set_status("Name must not be empty", true);
                     return;
                 }
-                let Some(kind) = self.prompt.clone() else {
-                    return;
-                };
                 self.close_prompt();
                 match kind {
                     // Renaming a project to what it is already called is no
@@ -1611,7 +1619,8 @@ impl Model {
                     .filter(|d| crate::core::is_working_day(*d))
                     .count();
                 format!(
-                    "Set {n} weekdays, {from} to {to}, to {}?",
+                    "Set {n} weekday{}, {from} to {to}, to {}?",
+                    if n == 1 { "" } else { "s" },
                     kind.display_name().to_lowercase()
                 )
             }
@@ -3267,6 +3276,20 @@ mod tests {
     }
 
     #[test]
+    fn confirm_text_for_a_single_weekday_range_says_weekday_not_weekdays() {
+        let (m, _rx) = model(d(2026, 9, 15));
+        let c = Confirm::SetKindRange {
+            from: d(2026, 9, 14),
+            to: d(2026, 9, 14),
+            kind: DayKind::Vacation,
+        };
+        assert_eq!(
+            m.confirm_text(&c),
+            "Set 1 weekday, 2026-09-14 to 2026-09-14, to vacation?"
+        );
+    }
+
+    #[test]
     fn esc_clears_the_anchor_before_anything_else() {
         let today = d(2026, 9, 15);
         let (mut m, _rx) = model(today);
@@ -3279,6 +3302,23 @@ mod tests {
         m.update(Msg::Back);
         assert_eq!(m.anchor, None);
         assert_eq!(m.screen, Screen::Month);
+    }
+
+    #[test]
+    fn a_range_with_no_weekdays_shows_a_status_instead_of_a_confirm() {
+        let today = d(2026, 9, 5); // Saturday
+        let (mut m, _rx) = model(today);
+        m.month = Some(month_data(
+            today,
+            work_days(d(2026, 9, 1), d(2026, 9, 30)),
+            None,
+        ));
+        m.update(Msg::ToggleAnchor); // anchor Sat 5
+        m.update(Msg::SelectDay(1)); // cursor Sun 6
+        m.update(Msg::SetKind(DayKind::Vacation));
+        assert_eq!(m.confirm, None);
+        assert_eq!(m.status.as_ref().unwrap().0, "No weekdays in the range");
+        assert_eq!(m.anchor, Some(today), "the anchor stays put");
     }
 
     #[test]
@@ -3402,6 +3442,16 @@ mod tests {
     }
 
     #[test]
+    fn prompt_submit_with_no_box_open_does_nothing() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        // Even a blank submit must not touch the status: with no box open,
+        // there is nothing to validate.
+        m.update(Msg::PromptSubmit("   ".into()));
+        assert_eq!(m.status, None);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn n_adds_a_project_through_the_name_box() {
         let (mut m, rx) = model(d(2026, 9, 15));
         m.update(Msg::OpenProjects);
@@ -3442,6 +3492,25 @@ mod tests {
         let _ = rx.try_recv();
         m.update(Msg::Back);
         assert_eq!(m.screen, Screen::Month);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::LoadMonth { .. }));
+    }
+
+    #[test]
+    fn back_from_the_projects_screen_still_reloads_with_an_anchor_set() {
+        // The anchor was set on the month screen before the projects screen
+        // was opened: leaving projects must reload the month, not just clear
+        // the anchor, even though both branches live in the same `Msg::Back`.
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::ToggleAnchor);
+        assert!(m.anchor.is_some());
+        m.update(Msg::OpenProjects);
+        std::iter::from_fn(|| rx.try_recv().ok()).for_each(drop);
+        m.update(Msg::Back);
+        assert_eq!(m.screen, Screen::Month);
+        assert!(
+            m.anchor.is_some(),
+            "the anchor is untouched by leaving projects"
+        );
         assert!(matches!(rx.try_recv().unwrap(), StoreCmd::LoadMonth { .. }));
     }
 

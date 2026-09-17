@@ -326,8 +326,9 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
                 ctx.store.set_day_kind(*d, &kind)?;
             }
             StoreReply::Changed(format!(
-                "{} weekdays set to {}",
+                "{} weekday{} set to {}",
                 weekdays.len(),
+                if weekdays.len() == 1 { "" } else { "s" },
                 kind.display_name().to_lowercase()
             ))
         }
@@ -633,6 +634,25 @@ mod tests {
                 DayKind::Vacation,
                 DayKind::Vacation
             ]
+        );
+    }
+
+    #[test]
+    fn set_kind_range_marks_a_single_weekday() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let reply = handle(
+            &ctx,
+            StoreCmd::SetKindRange {
+                from: d(2026, 9, 14),
+                to: d(2026, 9, 14),
+                kind: DayKind::Vacation,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reply,
+            StoreReply::Changed("1 weekday set to vacation".into())
         );
     }
 

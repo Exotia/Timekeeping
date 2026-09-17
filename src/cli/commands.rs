@@ -20,6 +20,12 @@ pub fn write_backup(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<PathBuf> {
     let dir = ctx.home.join("backups");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("tk-{}.db", now.format("%Y%m%d-%H%M%S")));
+    // `VACUUM INTO` refuses an existing target, so a second backup within the
+    // same second (two presses of `B`, say) would otherwise surface a raw
+    // SQLite error instead of just refreshing the file.
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
     ctx.store.backup_to(&path)?;
     Ok(path)
 }
@@ -557,6 +563,26 @@ mod tests {
             NaiveDate::from_ymd_opt(y, m, d).unwrap(),
             NaiveTime::from_hms_opt(h, mi, 0).unwrap(),
         )
+    }
+
+    #[test]
+    fn write_backup_twice_at_the_same_second_refreshes_the_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Ctx {
+            home: dir.path().to_path_buf(),
+            config: Config::from_toml(DEFAULT_TOML).unwrap(),
+            store: Store::open_in_memory().unwrap(),
+        };
+        let now = dt(2026, 9, 17, 12, 0);
+        let first = write_backup(&c, now).unwrap();
+        let second = write_backup(&c, now).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("backups"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]
