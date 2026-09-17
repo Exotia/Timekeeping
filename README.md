@@ -281,7 +281,8 @@ light up; `v` `f` `x` `p` `w` then ask once — `Set 5 weekdays, 2026-09-14 to
 weekends. A day with entries anywhere in the range refuses the whole range and
 changes nothing. `V` again or `Esc` clears the anchor; declining the confirm
 keeps it, so another day type can be tried on the same range. This is the TUI's
-equivalent of `tk day DATE KIND --to DATE`.
+counterpart of `tk day DATE KIND --to DATE`, except that it leaves weekends
+alone: the CLI form marks every day in the range, weekends included.
 
 `i` opens a one-field project picker: type to filter the known projects, `↑`
 and `↓` to move the highlight, `Enter` or `Tab` to take it, `Esc` to cancel. A
