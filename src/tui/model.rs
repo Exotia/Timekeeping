@@ -14,8 +14,8 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 use super::components;
 use super::ids::Id;
 use super::msg::{
-    ChartMode, Confirm, DayData, FormData, MonthData, Msg, RangeKind, SettingsData, StatsData,
-    StoreCmd, StoreReply, UserEvent,
+    ChartMode, Confirm, DayData, FormData, MonthData, Msg, ProjectsData, RangeKind, SettingsData,
+    StatsData, StoreCmd, StoreReply, UserEvent,
 };
 use super::theme::Theme;
 use super::view::chrome;
@@ -31,6 +31,8 @@ pub enum Screen {
     Month,
     Day,
     Stats,
+    // --- projects screen ---
+    Projects,
 }
 
 pub struct Model {
@@ -79,6 +81,19 @@ pub struct Model {
     /// The far end of the date range the day-type keys work on, dropped by `V`.
     /// The range is anchor..cursor in whichever order the two fall.
     pub anchor: Option<NaiveDate>,
+    // --- projects screen ---
+    /// Every project and what has been worked on it; `None` while loading.
+    pub projects: Option<ProjectsData>,
+    pub projects_cursor: usize,
+    /// What the one-field name box on that screen is for, while it is open.
+    pub prompt: Option<PromptKind>,
+}
+
+/// What the one-field name box is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptKind {
+    RenameProject { old: String },
+    AddProject,
 }
 
 /// What a write that touched a session's break should do once the refreshed day
@@ -336,6 +351,8 @@ impl Model {
             Screen::Month => Id::Month,
             Screen::Day => Id::Day,
             Screen::Stats => Id::Stats,
+            // --- projects screen ---
+            Screen::Projects => Id::Projects,
         };
         self.focus(id);
     }
@@ -631,6 +648,34 @@ impl Model {
         self.focus_screen();
     }
 
+    // --- projects screen ---
+
+    /// The project the cursor is on, if the screen has its data.
+    fn highlighted_project(&self) -> Option<&crate::core::Project> {
+        self.projects.as_ref()?.projects.get(self.projects_cursor)
+    }
+
+    /// Mount a fresh name box over the projects screen and give it focus.
+    fn open_prompt(&mut self, title: String, initial: &str, kind: PromptKind) {
+        let _ = self.app.umount(&Id::Prompt);
+        let _ = self.app.mount(
+            Id::Prompt,
+            Box::new(
+                components::text_prompt::TextPrompt::new(title, "Name", initial)
+                    .with_theme(&self.theme),
+            ),
+            vec![],
+        );
+        self.prompt = Some(kind);
+        self.focus(Id::Prompt);
+    }
+
+    fn close_prompt(&mut self) {
+        self.prompt = None;
+        let _ = self.app.umount(&Id::Prompt);
+        self.focus_screen();
+    }
+
     /// Re-validate the open settings overlay and push its footer line back in.
     ///
     /// `show_error` is false right after opening, where the values come straight
@@ -765,10 +810,12 @@ impl Model {
                     self.anchor = None;
                     self.set_status("Range cleared", false);
                 } else {
-                    let was_day = self.screen == Screen::Day;
+                    // The day editor writes entries and the projects screen
+                    // renames projects: either way the month on screen is stale.
+                    let reload = matches!(self.screen, Screen::Day | Screen::Projects);
                     self.screen = Screen::Month;
                     let _ = self.app.active(&Id::Month);
-                    if was_day {
+                    if reload {
                         self.load_month();
                     }
                 }
@@ -1189,6 +1236,63 @@ impl Model {
                     );
                 }
             }
+            // --- projects screen ---
+            Msg::OpenProjects => {
+                self.screen = Screen::Projects;
+                self.projects = None;
+                self.projects_cursor = 0;
+                self.focus(Id::Projects);
+                self.send(StoreCmd::LoadProjects);
+            }
+            Msg::ProjectsSelect(n) => {
+                let len = self.projects.as_ref().map_or(0, |p| p.projects.len());
+                if len > 0 {
+                    self.projects_cursor =
+                        (self.projects_cursor as i32 + n).clamp(0, len as i32 - 1) as usize;
+                }
+            }
+            Msg::ProjectsToggleArchive => {
+                if let Some(p) = self.highlighted_project().cloned() {
+                    self.send(StoreCmd::ArchiveProject {
+                        name: p.name,
+                        archived: !p.archived,
+                    });
+                }
+            }
+            Msg::ProjectsRename => {
+                if let Some(p) = self.highlighted_project().cloned() {
+                    self.open_prompt(
+                        "Rename project".into(),
+                        &p.name,
+                        PromptKind::RenameProject {
+                            old: p.name.clone(),
+                        },
+                    );
+                }
+            }
+            Msg::ProjectsAdd => self.open_prompt("New project".into(), "", PromptKind::AddProject),
+            Msg::PromptChanged => {}
+            Msg::PromptSubmit(text) => {
+                let name = text.trim().to_string();
+                if name.is_empty() {
+                    self.set_status("Name must not be empty", true);
+                    return;
+                }
+                let Some(kind) = self.prompt.clone() else {
+                    return;
+                };
+                self.close_prompt();
+                match kind {
+                    // Renaming a project to what it is already called is no
+                    // rename at all: the box just closes.
+                    PromptKind::RenameProject { old } if old == name => {}
+                    PromptKind::RenameProject { old } => {
+                        self.send(StoreCmd::RenameProject { old, new: name })
+                    }
+                    PromptKind::AddProject => self.send(StoreCmd::AddProject(name)),
+                }
+            }
+            Msg::PromptCancel => self.close_prompt(),
         }
     }
 
@@ -1241,6 +1345,13 @@ impl Model {
                 self.reload_after_write();
             }
             StoreReply::Failed(e) => self.set_status(e, true),
+            // --- projects screen ---
+            StoreReply::Projects(d) => {
+                // A project that was just renamed or archived keeps the cursor
+                // where it was, and a shorter list pulls it back onto the last row.
+                self.projects_cursor = self.projects_cursor.min(d.projects.len().saturating_sub(1));
+                self.projects = Some(d);
+            }
         }
         // A box waiting for its day opens as soon as that day is in hand — and
         // not before: the reply that asked for it arrives while the day on
@@ -1261,6 +1372,9 @@ impl Model {
         if self.screen == Screen::Day {
             self.send(StoreCmd::LoadDay(self.selected));
         }
+        if self.screen == Screen::Projects {
+            self.send(StoreCmd::LoadProjects);
+        }
     }
 
     pub fn view(&mut self) {
@@ -1269,6 +1383,7 @@ impl Model {
         let settings_open = self.settings.is_some();
         let picker_open = self.clock_picker.is_some();
         let split_open = self.break_split.is_some();
+        let prompt_open = self.prompt.is_some();
         let _ = term.draw(|f| {
             self.draw(f);
             let area = f.area();
@@ -1283,6 +1398,9 @@ impl Model {
             }
             if split_open {
                 self.app.view(&Id::BreakSplit, f, area);
+            }
+            if prompt_open {
+                self.app.view(&Id::Prompt, f, area);
             }
         });
         self.terminal = Some(term);
@@ -1307,6 +1425,8 @@ impl Model {
             Screen::Month => super::view::month::draw(self, f, body),
             Screen::Day => super::view::day::draw(self, f, body),
             Screen::Stats => super::view::stats::draw(self, f, body),
+            // --- projects screen ---
+            Screen::Projects => super::view::projects::draw(self, f, body),
         }
         chrome::draw_status_bar(
             f,
@@ -1383,6 +1503,16 @@ impl Model {
                 ("u", "units"),
                 ("Esc", "back"),
             ],
+            // --- projects screen ---
+            Screen::Projects => &[
+                ("↑↓", "project"),
+                ("a", "archive"),
+                ("r", "rename"),
+                ("n", "new"),
+                ("u", "units"),
+                ("?", "help"),
+                ("Esc", "back"),
+            ],
         }
     }
 
@@ -1421,6 +1551,7 @@ impl Model {
                 ("Enter", "open day editor"),
                 ("s", "statistics"),
                 ("c", "settings"),
+                ("P", "projects: archive, rename, add"),
                 ("i", "clock in / switch project / resume"),
                 ("o", "clock out"),
                 ("b", "take a break (books work so far)"),
@@ -1453,6 +1584,15 @@ impl Model {
                 ("PgUp PgDn", "previous / next period"),
                 ("t", "back to today"),
                 ("r", "toggle per-period / running balance"),
+                ("u", "toggle h:mm / decimal hours"),
+                ("Esc", "back"),
+            ],
+            // --- projects screen ---
+            Screen::Projects => &[
+                ("↑ ↓ j k", "select project"),
+                ("a", "archive / unarchive"),
+                ("r", "rename"),
+                ("n", "new project"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("Esc", "back"),
             ],
@@ -1547,6 +1687,9 @@ pub mod testing {
             split_followup: None,
             break_split: None,
             anchor: None,
+            projects: None,
+            projects_cursor: 0,
+            prompt: None,
         };
         (m, rx)
     }
@@ -3172,6 +3315,46 @@ mod tests {
         ));
     }
 
+    // --- projects screen ---
+
+    fn projects_data() -> ProjectsData {
+        let p = |id, name: &str, archived| crate::core::Project {
+            id,
+            name: name.into(),
+            color_index: 0,
+            archived,
+        };
+        ProjectsData {
+            projects: vec![p(1, "Alpha", false), p(2, "Old", true)],
+            net_by_project: std::collections::BTreeMap::from([("Alpha".to_string(), Minutes(600))]),
+        }
+    }
+
+    #[test]
+    fn shift_p_opens_the_projects_screen_and_loads_it() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::OpenProjects);
+        assert_eq!(m.screen, Screen::Projects);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::LoadProjects));
+    }
+
+    #[test]
+    fn a_flips_the_archived_flag_of_the_highlighted_project() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::OpenProjects);
+        let _ = rx.try_recv();
+        m.on_store(StoreReply::Projects(projects_data()));
+        m.update(Msg::ProjectsSelect(1));
+        m.update(Msg::ProjectsToggleArchive);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::ArchiveProject {
+                name,
+                archived: false
+            } if name == "Old"
+        ));
+    }
+
     #[test]
     fn the_month_help_lists_the_range_key() {
         let (m, _rx) = model(d(2026, 9, 15));
@@ -3182,6 +3365,96 @@ mod tests {
         assert!(
             !m.key_hints().iter().any(|(k, _)| *k == "V"),
             "the day hint row has no room for it"
+        );
+    }
+
+    #[test]
+    fn r_renames_through_the_name_box_and_blank_names_are_refused() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::OpenProjects);
+        let _ = rx.try_recv();
+        m.on_store(StoreReply::Projects(projects_data()));
+        m.update(Msg::ProjectsRename);
+        assert_eq!(
+            m.prompt,
+            Some(PromptKind::RenameProject {
+                old: "Alpha".into()
+            })
+        );
+        m.update(Msg::PromptSubmit("   ".into()));
+        assert!(m.prompt.is_some(), "blank name keeps the box open");
+        assert!(
+            m.status
+                .as_ref()
+                .is_some_and(|s| s.0.contains("must not be empty"))
+        );
+        // The same name is no rename at all: the box just closes.
+        m.update(Msg::PromptSubmit("Alpha".into()));
+        assert_eq!(m.prompt, None);
+        assert!(rx.try_recv().is_err());
+        m.update(Msg::ProjectsRename);
+        m.update(Msg::PromptSubmit("Alpha2".into()));
+        assert_eq!(m.prompt, None);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::RenameProject { old, new } if old == "Alpha" && new == "Alpha2"
+        ));
+    }
+
+    #[test]
+    fn n_adds_a_project_through_the_name_box() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::OpenProjects);
+        let _ = rx.try_recv();
+        m.update(Msg::ProjectsAdd);
+        assert_eq!(m.prompt, Some(PromptKind::AddProject));
+        m.update(Msg::PromptSubmit("Gamma".into()));
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::AddProject(n) if n == "Gamma"));
+        // Esc on the box leaves nothing behind.
+        m.update(Msg::ProjectsAdd);
+        m.update(Msg::PromptCancel);
+        assert_eq!(m.prompt, None);
+    }
+
+    #[test]
+    fn a_write_reloads_the_projects_screen_and_keeps_the_cursor() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::OpenProjects);
+        let _ = rx.try_recv();
+        m.on_store(StoreReply::Projects(projects_data()));
+        m.update(Msg::ProjectsSelect(1));
+        m.on_store(StoreReply::Changed("Old unarchived".into()));
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|c| matches!(c, StoreCmd::LoadProjects)),
+            "the screen reloads itself after a write"
+        );
+        // A shorter list clamps the cursor instead of pointing past the end.
+        let mut shorter = projects_data();
+        shorter.projects.truncate(1);
+        m.on_store(StoreReply::Projects(shorter));
+        assert_eq!(m.projects_cursor, 0);
+    }
+
+    #[test]
+    fn leaving_the_projects_screen_reloads_the_month() {
+        let (mut m, rx) = model(d(2026, 9, 15));
+        m.update(Msg::OpenProjects);
+        let _ = rx.try_recv();
+        m.update(Msg::Back);
+        assert_eq!(m.screen, Screen::Month);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::LoadMonth { .. }));
+    }
+
+    #[test]
+    fn the_projects_hints_and_help_name_its_keys() {
+        let (mut m, _rx) = model(d(2026, 9, 15));
+        m.screen = Screen::Projects;
+        assert!(m.key_hints().contains(&("a", "archive")));
+        assert!(m.help_keys().contains(&("a", "archive / unarchive")));
+        m.screen = Screen::Month;
+        assert!(
+            m.help_keys()
+                .contains(&("P", "projects: archive, rename, add"))
         );
     }
 }

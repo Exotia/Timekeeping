@@ -3,6 +3,7 @@
 pub mod chrome;
 pub mod day;
 pub mod month;
+pub mod projects;
 pub mod stats;
 
 use tuirealm::ratatui::style::{Modifier, Style};

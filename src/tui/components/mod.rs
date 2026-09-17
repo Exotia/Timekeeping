@@ -10,8 +10,10 @@ pub mod form;
 pub mod help;
 pub mod month;
 pub mod project_picker;
+pub mod projects;
 pub mod settings;
 pub mod stats;
+pub mod text_prompt;
 
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::Component;

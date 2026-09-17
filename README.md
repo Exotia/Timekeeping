@@ -194,7 +194,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. Reports the entry's gross, its net after its share of the break, and the day's net. |
 | `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. In the TUI: `V` then a day-type key. |
 | `tk projects` | | Same as `tk projects list`. |
-| `tk projects list` | | List projects; archived ones are marked. |
+| `tk projects list` | | List projects; archived ones are marked. In the TUI: `P`. |
 | `tk projects add NAME` | | Create a project. |
 | `tk projects archive NAME` | | Hide a project from the picker without deleting its entries. |
 | `tk projects unarchive NAME` | | Undo an archive. |
@@ -242,7 +242,7 @@ any key closes it again.
 `u` switches every duration on screen between `h:mm` (`+07:48`) and decimal
 hours (`+7.80h`) and writes the choice to `hours_format` in `config.toml`, so
 the next run — and `tk status` in your prompt — opens the way you left it. It
-works on all three screens, whenever no overlay has the keyboard. The month
+works on all four screens, whenever no overlay has the keyboard. The month
 screen's hint row has no room for it at 80 columns; `?` lists it there.
 
 ### Month view (the screen `tk` opens on)
@@ -254,6 +254,7 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `t` | Jump to today |
 | `Enter` | Open the day editor |
 | `s` | Statistics |
+| `P` | Projects: archive, unarchive, rename, add |
 | `c` | Settings overlay: start date, initial balance, daily target, vacation days |
 | `i` | Clock in on a project — while clocked in, switch to another one; on a break, come back to work |
 | `o` | Clock out — on a break, end it |
@@ -444,6 +445,27 @@ hours are net, each entry carrying its share of its session's break, so they add
 up to the `net` on the chart's own footer for the same days. No target, no
 balance; those belong to the chart.
 
+### Projects
+
+| Key | Action |
+| --- | --- |
+| `↑` / `k`, `↓` / `j` | Move between projects |
+| `a` | Archive the project, or unarchive it if it is archived |
+| `r` | Rename it |
+| `n` | New project |
+| `u` | Toggle every duration between `h:mm` and decimal hours |
+| `?` | Help |
+| `Esc`, `q` | Back to the month view |
+
+`P` on the month view opens this screen: every project, archived ones
+included, active first and then by name. `NET` is the net time worked on that
+project since `start_date` — each entry with its share of its session's break,
+so the column reads like the month view's `NET`. Archiving only hides a project
+from the clock-in picker: its entries, and its hours here, stay exactly as they
+were, and `a` on an archived project brings it back. A rename follows every
+entry that names the project, and is refused when a project of the new name
+already exists; a blank name is refused too, and the name box stays open.
+
 ### Overlays
 
 | Overlay | Keys |
@@ -451,6 +473,7 @@ balance; those belong to the chart.
 | Confirm dialog | `y` or `Enter` confirms; `n`, `Esc` or `q` cancels |
 | Project picker (`i`) | Type to filter; `↑` `↓` move the highlight; `Enter` or `Tab` takes it; `Esc` cancels |
 | Break split (`b` in the day editor) | `Tab` / `Shift+Tab` and `↑` `↓` move between entries; `Enter` on the last one or `Ctrl+S` saves; `Esc` cancels |
+| Name box (`r` / `n` on the projects screen) | `Enter` saves; `Esc` cancels |
 | Help | Any key closes it |
 
 ## Moving your data around
