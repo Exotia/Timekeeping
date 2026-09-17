@@ -1118,4 +1118,22 @@ mod tests {
         assert_eq!(style_of(100, 40, draw, "Thu 03").bg, Some(t.bg_selected));
         assert_ne!(style_of(100, 40, draw, "KW 36").bg, Some(t.bg_selected));
     }
+
+    /// The whole way from the key to the screen: what `V` anchored is what the
+    /// month screen lights up.
+    #[test]
+    fn the_anchor_the_model_holds_is_what_the_month_screen_lights_up() {
+        let (data, ..) = fixture();
+        let (mut m, _rx) = crate::tui::model::testing::model(d(2026, 9, 15));
+        m.selected = d(2026, 9, 8);
+        m.month = Some(data);
+        m.update(crate::tui::msg::Msg::ToggleAnchor);
+        m.update(crate::tui::msg::Msg::SelectDay(2));
+        let t = m.theme.clone();
+        let draw = |f: &mut Frame| draw(&m, f, f.area());
+        assert_eq!(style_of(100, 40, draw, "Tue 08").bg, Some(t.bg_selected));
+        assert_eq!(style_of(100, 40, draw, "Wed 09").bg, Some(t.bg_selected));
+        assert_eq!(style_of(100, 40, draw, "Thu 10").bg, Some(t.bg_selected));
+        assert_ne!(style_of(100, 40, draw, "Fri 11").bg, Some(t.bg_selected));
+    }
 }
