@@ -222,7 +222,7 @@ fn key_hints_fit_the_minimum_terminal() {
         day: days[13].clone(),
         projects: vec![],
     });
-    for screen in [Screen::Month, Screen::Day, Screen::Stats] {
+    for screen in [Screen::Month, Screen::Day, Screen::Stats, Screen::Projects] {
         m.screen = screen;
         for w in [80u16, 100] {
             let out = rows(w, 24, |f| m.draw(f));

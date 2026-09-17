@@ -1,6 +1,7 @@
 //! The store worker: a plain thread owning `Ctx` (Store + Config), plus the async port
 //! that carries its replies back into the tui-realm event listener.
 
+use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
 
@@ -9,7 +10,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tuirealm::event::Event;
 use tuirealm::listener::{PollAsync, PortError, PortResult};
 
-use super::msg::{DayData, MonthData, StatsData, StoreCmd, StoreReply, UserEvent};
+use super::msg::{DayData, MonthData, ProjectsData, StatsData, StoreCmd, StoreReply, UserEvent};
 use crate::cli::Ctx;
 use crate::core::{
     DayKind, Entry, Minutes, TodayCtx, day_stats, deduction, is_working_day, running_balance,
@@ -294,6 +295,49 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             StoreReply::Changed("Break split saved".into())
         }
         StoreCmd::Shutdown => StoreReply::Changed(String::new()),
+        // --- projects screen ---
+        StoreCmd::LoadProjects => {
+            let mut projects = ctx.store.list_projects(true)?;
+            // Active first, then by name: the projects being worked on are the
+            // ones the screen is about, and archived ones settle at the bottom.
+            projects.sort_by(|a, b| {
+                a.archived
+                    .cmp(&b.archived)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+            let rules = ctx.config.rules();
+            let cal = ctx.config.calendar();
+            let clocked_in = ctx.store.session()?.is_some();
+            let tc = TodayCtx { today, clocked_in };
+            let mut net_by_project: BTreeMap<String, Minutes> = BTreeMap::new();
+            // Net, not gross: every entry carries its share of its session's
+            // break, so the column adds up the same way the month view does.
+            for day in ctx.store.days_in(rules.start_date, today, &cal)? {
+                let s = day_stats(&day, &rules, &cal, &tc);
+                for (idx, e) in day.entries.iter().enumerate() {
+                    *net_by_project.entry(e.project.clone()).or_default() += s.entry_nets[idx];
+                }
+            }
+            StoreReply::Projects(ProjectsData {
+                projects,
+                net_by_project,
+            })
+        }
+        StoreCmd::ArchiveProject { name, archived } => {
+            ctx.store.archive_project(&name, archived)?;
+            StoreReply::Changed(format!(
+                "{name} {}",
+                if archived { "archived" } else { "unarchived" }
+            ))
+        }
+        StoreCmd::RenameProject { old, new } => {
+            ctx.store.rename_project(&old, &new)?;
+            StoreReply::Changed(format!("{old} renamed to {new}"))
+        }
+        StoreCmd::AddProject(name) => {
+            ctx.store.add_project(&name)?;
+            StoreReply::Changed(format!("{name} added"))
+        }
     })
 }
 
@@ -361,6 +405,102 @@ mod tests {
             StoreReply::Stats(s) => s,
             other => panic!("expected Stats, got {other:?}"),
         }
+    }
+
+    // --- projects screen ---
+
+    fn projects(ctx: &Ctx) -> ProjectsData {
+        match handle(ctx, StoreCmd::LoadProjects).unwrap() {
+            StoreReply::Projects(p) => p,
+            other => panic!("expected Projects, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_projects_lists_archived_ones_and_sums_net_minutes() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        ctx.store.add_project("Beta").unwrap();
+        ctx.store.add_project("Alpha").unwrap();
+        ctx.store.add_project("Old").unwrap();
+        ctx.store.archive_project("Old", true).unwrap();
+        // 08:00–12:00 on Alpha: four hours, one session, 18 minutes of break.
+        handle(
+            &ctx,
+            StoreCmd::AddEntry {
+                date: d(2026, 9, 14),
+                start: NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+                end: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+                project: "Alpha".into(),
+                comment: String::new(),
+            },
+        )
+        .unwrap();
+        let p = projects(&ctx);
+        let names: Vec<&str> = p.projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Alpha", "Beta", "Old"],
+            "active first, then by name"
+        );
+        assert!(p.projects[2].archived);
+        assert_eq!(p.net_by_project.get("Alpha"), Some(&Minutes(222)));
+        assert_eq!(p.net_by_project.get("Beta"), None);
+    }
+
+    #[test]
+    fn archive_rename_and_add_reply_with_a_status_line() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        ctx.store.add_project("Alpha").unwrap();
+        assert_eq!(
+            handle(
+                &ctx,
+                StoreCmd::ArchiveProject {
+                    name: "Alpha".into(),
+                    archived: true
+                }
+            )
+            .unwrap(),
+            StoreReply::Changed("Alpha archived".into())
+        );
+        assert!(
+            ctx.store
+                .project_by_name("Alpha")
+                .unwrap()
+                .unwrap()
+                .archived
+        );
+        assert_eq!(
+            handle(
+                &ctx,
+                StoreCmd::ArchiveProject {
+                    name: "Alpha".into(),
+                    archived: false
+                }
+            )
+            .unwrap(),
+            StoreReply::Changed("Alpha unarchived".into())
+        );
+        assert_eq!(
+            handle(
+                &ctx,
+                StoreCmd::RenameProject {
+                    old: "Alpha".into(),
+                    new: "Alef".into()
+                }
+            )
+            .unwrap(),
+            StoreReply::Changed("Alpha renamed to Alef".into())
+        );
+        assert_eq!(
+            handle(&ctx, StoreCmd::AddProject("Gamma".into())).unwrap(),
+            StoreReply::Changed("Gamma added".into())
+        );
+        assert!(
+            handle(&ctx, StoreCmd::AddProject("Gamma".into())).is_err(),
+            "duplicates bubble up as errors"
+        );
     }
 
     /// `LoadStats` carries in the balance the range opens on, so a running chart

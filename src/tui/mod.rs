@@ -87,6 +87,11 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         Box::new(components::day::DayScreen::default()),
         vec![],
     )?;
+    app.mount(
+        Id::Projects,
+        Box::new(components::projects::ProjectsScreen::default()),
+        vec![],
+    )?;
     app.active(&Id::Month)?;
 
     // Restore the terminal on panic so the shell is usable.
@@ -134,6 +139,9 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         chart_mode: msg::ChartMode::default(),
         split_followup: None,
         break_split: None,
+        projects: None,
+        projects_cursor: 0,
+        prompt: None,
     };
     model.load_month();
 

@@ -39,6 +39,8 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Esc => Msg::Back,
+            // --- projects screen ---
+            Key::Char('P') => Msg::OpenProjects,
             _ => return None,
         })
     }
@@ -53,6 +55,13 @@ mod tests {
         let mut c = MonthScreen::default();
         let ev = Event::Keyboard(KeyEvent::new(Key::Char('u'), KeyModifiers::NONE));
         assert_eq!(c.on(&ev), Some(Msg::ToggleHours));
+    }
+
+    #[test]
+    fn shift_p_opens_the_projects_screen() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('P'), KeyModifiers::SHIFT));
+        assert_eq!(c.on(&ev), Some(Msg::OpenProjects));
     }
 
     #[test]

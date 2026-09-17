@@ -12,4 +12,7 @@ pub enum Id {
     ClockPicker,
     Confirm,
     Help,
+    // --- projects screen ---
+    Projects,
+    Prompt,
 }

@@ -1,5 +1,7 @@
 //! Messages exchanged between components, the model and the store worker.
 
+use std::collections::BTreeMap;
+
 use chrono::{NaiveDate, NaiveTime};
 
 use crate::core::{Day, DayKind, Minutes, Project};
@@ -127,6 +129,18 @@ pub enum Msg {
     StatsToday,
     /// `r`: switch the chart between the per-period bars and the running balance.
     ToggleChartMode,
+    // --- projects screen ---
+    OpenProjects,
+    ProjectsSelect(i32),
+    /// `a`: archive the highlighted project, or unarchive it if it is archived.
+    ProjectsToggleArchive,
+    /// `r`: open the name box prefilled with the highlighted project's name.
+    ProjectsRename,
+    /// `n`: open an empty name box.
+    ProjectsAdd,
+    PromptChanged,
+    PromptSubmit(String),
+    PromptCancel,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +191,17 @@ pub enum StoreCmd {
     /// Set (or clear, with `None`) the break shares of a session's entries.
     SetBreakShares(Vec<(i64, Option<Minutes>)>),
     Shutdown,
+    // --- projects screen ---
+    LoadProjects,
+    ArchiveProject {
+        name: String,
+        archived: bool,
+    },
+    RenameProject {
+        old: String,
+        new: String,
+    },
+    AddProject(String),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -220,6 +245,15 @@ pub struct StatsData {
     pub carried_in: Minutes,
 }
 
+// --- projects screen ---
+/// Everything the projects screen shows: every project, archived ones
+/// included, and the net minutes worked on each from `start_date` to today.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ProjectsData {
+    pub projects: Vec<Project>,
+    pub net_by_project: BTreeMap<String, Minutes>,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum StoreReply {
     Month(MonthData),
@@ -240,6 +274,8 @@ pub enum StoreReply {
         message: String,
     },
     Failed(String),
+    // --- projects screen ---
+    Projects(ProjectsData),
 }
 
 #[derive(Debug, Clone)]
