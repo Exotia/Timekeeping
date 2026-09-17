@@ -294,6 +294,11 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             StoreReply::Changed("Break split saved".into())
         }
         StoreCmd::Shutdown => StoreReply::Changed(String::new()),
+        // --- backup key ---
+        StoreCmd::Backup => {
+            let path = crate::cli::commands::write_backup(ctx, crate::cli::commands::now_local())?;
+            StoreReply::Changed(format!("Backup written to {}", path.display()))
+        }
     })
 }
 
@@ -402,5 +407,26 @@ mod tests {
             stats(&ctx, d(2025, 1, 1), d(2025, 1, 31)).carried_in,
             Minutes(60)
         );
+    }
+
+    #[test]
+    fn backup_writes_a_file_under_home_backups() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let reply = handle(&ctx, StoreCmd::Backup).unwrap();
+        let StoreReply::Changed(msg) = reply else {
+            panic!("expected Changed, got {reply:?}")
+        };
+        assert!(msg.starts_with("Backup written to "), "{msg}");
+        let files: Vec<_> = std::fs::read_dir(home.path().join("backups"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(
+            files[0].starts_with("tk-") && files[0].ends_with(".db"),
+            "{files:?}"
+        );
+        assert!(msg.ends_with(&files[0]), "{msg}");
     }
 }

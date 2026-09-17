@@ -127,6 +127,9 @@ pub enum Msg {
     StatsToday,
     /// `r`: switch the chart between the per-period bars and the running balance.
     ToggleChartMode,
+    // --- backup key ---
+    /// `B` on the month screen: copy the database into `<home>/backups/`.
+    Backup,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +180,8 @@ pub enum StoreCmd {
     /// Set (or clear, with `None`) the break shares of a session's entries.
     SetBreakShares(Vec<(i64, Option<Minutes>)>),
     Shutdown,
+    // --- backup key ---
+    Backup,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

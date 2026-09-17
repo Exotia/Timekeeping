@@ -1153,6 +1153,8 @@ impl Model {
                     }
                 }
             }
+            // --- backup key ---
+            Msg::Backup => self.send(StoreCmd::Backup),
         }
     }
 
@@ -1394,6 +1396,7 @@ impl Model {
                 ("p", "public holiday"),
                 ("w", "reset to work day"),
                 ("u", "toggle h:mm / decimal hours"),
+                ("B", "back up the database"),
                 ("q", "quit"),
             ],
             Screen::Day => &[
@@ -2989,5 +2992,13 @@ mod tests {
         let (m, _rx) = model(d(2026, 9, 15));
         assert!(m.key_hints().contains(&("c", "settings")));
         assert!(m.help_keys().contains(&("c", "settings")));
+    }
+
+    #[test]
+    fn backup_key_sends_the_backup_command() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let (mut m, rx) = model(today);
+        m.update(Msg::Backup);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::Backup));
     }
 }

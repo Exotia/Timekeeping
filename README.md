@@ -200,7 +200,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk projects unarchive NAME` | | Undo an archive. |
 | `tk projects rename OLD NEW` | | Rename a project. |
 | `tk config` | `--start DATE`<br>`--balance ±HH:MM`<br>`--target HH:MM`<br>`--vacation DAYS`<br>`--hours hm\|decimal` | Without flags, print the five core settings. With any flag, change them in `config.toml` — comments and break tiers are kept — and print the new table. A running TUI keeps the old values until it is restarted, except `hours_format`, which `u` changes live. |
-| `tk backup` | | Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db`. |
+| `tk backup` | | Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db`. `B` in the TUI does the same. |
 | `tk export` | `--format csv\|json` (default `csv`)<br>`--from DATE`<br>`--to DATE`<br>`-o, --output PATH` | Export entries. Defaults to `start_date` … today, printed to stdout unless `--output` is given. |
 
 Global flags, accepted with any subcommand: `--home DIR`, `--help`, `--version`.
@@ -264,6 +264,7 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `p` | Mark the day as a public holiday |
 | `w` | Reset the day to a work day |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
+| `B` | Write a backup of the database to `<home>/backups/` (same as `tk backup`) |
 | `?` | Help |
 | `Esc` | Close an open overlay |
 | `q`, `Ctrl+C` | Quit |
@@ -461,6 +462,8 @@ tk backup                      # snapshot into <home>/backups/
 tk export --format csv -o hours.csv
 tk export --format json --from 2026-01-01 --to 2026-12-31 -o 2026.json
 ```
+
+`B` on the month screen writes the same snapshot without leaving the TUI.
 
 The CSV columns are `date,start,end,project,comment,gross,net,break`, where
 `break` is what this entry paid towards its session's break deduction (always

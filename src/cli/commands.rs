@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::{Context as _, anyhow, bail};
 use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
@@ -12,6 +13,15 @@ use crate::core::{
 
 pub fn now_local() -> NaiveDateTime {
     Local::now().naive_local()
+}
+
+/// Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db` and return the path.
+pub fn write_backup(ctx: &Ctx, now: NaiveDateTime) -> anyhow::Result<PathBuf> {
+    let dir = ctx.home.join("backups");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("tk-{}.db", now.format("%Y%m%d-%H%M%S")));
+    ctx.store.backup_to(&path)?;
+    Ok(path)
 }
 
 /// The net of one entry of a day: its gross minus its share of its session's
@@ -407,10 +417,7 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
             }
         }
         Command::Backup => {
-            let dir = ctx.home.join("backups");
-            std::fs::create_dir_all(&dir)?;
-            let path = dir.join(format!("tk-{}.db", now.format("%Y%m%d-%H%M%S")));
-            ctx.store.backup_to(&path)?;
+            let path = write_backup(ctx, now)?;
             writeln!(out, "Backup written to {}", path.display())?;
         }
         Command::Export {
