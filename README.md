@@ -192,7 +192,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk break` | `-m, --comment TEXT` | Take a break: the work so far is booked straight away, and the clock stays on the project, paused, until you come back. `tk in` resumes it — on the same project unless you name another — and `tk out` ends the break without booking anything more. |
 | `tk status` | | One line for prompts and status bars. Clocked in: the project, the running time, the time you clocked in at, today's net and the overall balance. On a break: `☕ on break`, how long it has lasted, since when, the project waiting, today's net and the balance. Otherwise: `not clocked in`, today's net and the overall balance. |
 | `tk add DATE RANGE` | `-p, --project NAME` *(required)*<br>`-m, --comment TEXT` | Add an entry, e.g. `tk add 2026-09-14 0900-1530 -p Alpha -m "review"`. Reports the entry's gross, its net after its share of the break, and the day's net. |
-| `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. |
+| `tk day DATE KIND` | `--to DATE`<br>`--label TEXT` | Set the kind of one day, or of every day from `DATE` to `--to` inclusive. `KIND` is `work`, `vacation`, `flex`, `holiday`, `sick` or `absence`; `--label` names an `absence`. In the TUI: `V` then a day-type key. |
 | `tk projects` | | Same as `tk projects list`. |
 | `tk projects list` | | List projects; archived ones are marked. |
 | `tk projects add NAME` | | Create a project. |
@@ -263,6 +263,7 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `x` | Mark the day as sick |
 | `p` | Mark the day as a public holiday |
 | `w` | Reset the day to a work day |
+| `V` | Start or clear a range: the day-type keys then apply to every weekday from the anchor to the cursor |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `?` | Help |
 | `Esc` | Close an open overlay |
@@ -271,6 +272,14 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 Changing a day type asks for confirmation first, and is refused with a status
 message if the day already has entries, or if it is a weekend (weekends never
 carry a target, so they need no day type).
+
+`V` drops an anchor on the selected day and the rows from it up to the cursor
+light up; `v` `f` `x` `p` `w` then ask once — `Set 5 weekdays, 2026-09-14 to
+2026-09-18, to vacation?` — and mark every weekday in between, skipping the
+weekends. A day with entries anywhere in the range refuses the whole range and
+changes nothing. `V` again or `Esc` clears the anchor; declining the confirm
+keeps it, so another day type can be tried on the same range. This is the TUI's
+equivalent of `tk day DATE KIND --to DATE`.
 
 `i` opens a one-field project picker: type to filter the known projects, `↑`
 and `↓` to move the highlight, `Enter` or `Tab` to take it, `Esc` to cancel. A
