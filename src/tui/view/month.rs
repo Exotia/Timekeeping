@@ -276,6 +276,7 @@ pub fn draw(m: &Model, f: &mut Frame, area: Rect) {
         &v,
         data,
         m.selected,
+        m.anchor.map(|a| (a.min(m.selected), a.max(m.selected))),
         m.today,
         area.width >= 90,
         m.hours,
@@ -295,6 +296,9 @@ pub fn draw_table(
     v: &MonthView,
     data: &MonthData,
     selected: NaiveDate,
+    // The day-type keys' range, anchor and cursor in date order: every day row
+    // inside it is drawn as selected.
+    range: Option<(NaiveDate, NaiveDate)>,
     today: NaiveDate,
     show_comment: bool,
     fmt: HoursFormat,
@@ -333,6 +337,9 @@ pub fn draw_table(
         .iter()
         .map(|r| {
             let sel = row_is_selected(v, r, selected);
+            let in_range = range.is_some_and(|(from, to)| {
+                !matches!(r.kind, RowKind::WeekFooter { .. }) && r.date >= from && r.date <= to
+            });
             let is_today = r.date == today;
             let mark = if sel { "▶" } else { " " };
             let day_style = if is_today {
@@ -439,7 +446,7 @@ pub fn draw_table(
                 }
             };
             let mut row = TRow::new(cells);
-            if sel {
+            if sel || in_range {
                 row = row.style(Style::default().bg(t.bg_selected));
             }
             row
@@ -741,6 +748,7 @@ mod tests {
                 &v,
                 &data,
                 d(2026, 9, 6),
+                None,
                 d(2026, 9, 15),
                 true,
                 HoursFormat::Hm,
@@ -786,6 +794,7 @@ mod tests {
                 &v,
                 &data,
                 d(2026, 9, 14),
+                None,
                 d(2026, 9, 15),
                 true,
                 HoursFormat::Hm,
@@ -819,6 +828,7 @@ mod tests {
                 &v,
                 &data,
                 d(2026, 9, 14),
+                None,
                 d(2026, 9, 15),
                 true,
                 HoursFormat::Decimal,
@@ -896,6 +906,7 @@ mod tests {
                 &v,
                 &data,
                 d(2026, 9, 14),
+                None,
                 d(2026, 9, 15),
                 true,
                 HoursFormat::Hm,
@@ -932,6 +943,7 @@ mod tests {
                 &v,
                 &data,
                 d(2026, 9, 14),
+                None,
                 d(2026, 9, 15),
                 false,
                 HoursFormat::Hm,
@@ -973,6 +985,7 @@ mod tests {
                 &v,
                 &data,
                 d(2026, 9, 14),
+                None,
                 d(2026, 9, 15),
                 true,
                 HoursFormat::Hm,
@@ -1006,6 +1019,7 @@ mod tests {
                     &v,
                     &data,
                     d(2026, 9, 14),
+                    None,
                     d(2026, 9, 15),
                     true,
                     HoursFormat::Hm,
@@ -1035,6 +1049,7 @@ mod tests {
                     &v,
                     &data,
                     d(2026, 9, 14),
+                    None,
                     d(2026, 9, 15),
                     true,
                     HoursFormat::Hm,
@@ -1043,5 +1058,64 @@ mod tests {
             "08:00",
         );
         assert_eq!(start.fg, Some(t.text));
+    }
+
+    // --- range marking ---
+
+    #[test]
+    fn rows_between_anchor_and_cursor_share_the_selection_background() {
+        let (data, rules, cal) = fixture();
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        let t = Theme::dark();
+        let draw = |f: &mut Frame| {
+            draw_table(
+                f,
+                f.area(),
+                &t,
+                &v,
+                &data,
+                d(2026, 9, 10),
+                Some((d(2026, 9, 8), d(2026, 9, 10))),
+                d(2026, 9, 15),
+                true,
+                HoursFormat::Hm,
+            )
+        };
+        assert_eq!(style_of(100, 40, draw, "Tue 08").bg, Some(t.bg_selected));
+        assert_eq!(style_of(100, 40, draw, "Wed 09").bg, Some(t.bg_selected));
+        assert_eq!(style_of(100, 40, draw, "Thu 10").bg, Some(t.bg_selected));
+        assert_ne!(style_of(100, 40, draw, "Fri 11").bg, Some(t.bg_selected));
+        assert_ne!(style_of(100, 40, draw, "Mon 07").bg, Some(t.bg_selected));
+        let rows = render(100, 40, draw);
+        assert!(
+            rows.iter().any(|r| r.contains('▶') && r.contains("Thu 10")),
+            "cursor keeps its mark"
+        );
+        assert!(!rows.iter().any(|r| r.contains('▶') && r.contains("Tue 08")));
+    }
+
+    /// A week footer sits inside the range's dates but is no day: it must stay
+    /// plain, or the highlight would look like it ran on past the cursor.
+    #[test]
+    fn a_week_footer_inside_the_range_stays_plain() {
+        let (data, rules, cal) = fixture();
+        let v = build_month_view(&data, &rules, &cal, d(2026, 9, 15));
+        let t = Theme::dark();
+        let draw = |f: &mut Frame| {
+            draw_table(
+                f,
+                f.area(),
+                &t,
+                &v,
+                &data,
+                d(2026, 9, 8),
+                Some((d(2026, 9, 3), d(2026, 9, 8))),
+                d(2026, 9, 15),
+                true,
+                HoursFormat::Hm,
+            )
+        };
+        assert_eq!(style_of(100, 40, draw, "Thu 03").bg, Some(t.bg_selected));
+        assert_ne!(style_of(100, 40, draw, "KW 36").bg, Some(t.bg_selected));
     }
 }

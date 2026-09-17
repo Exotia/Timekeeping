@@ -34,6 +34,12 @@ pub enum ChartMode {
 pub enum Confirm {
     DeleteEntry(i64),
     SetKind(NaiveDate, DayKind),
+    // --- range marking ---
+    SetKindRange {
+        from: NaiveDate,
+        to: NaiveDate,
+        kind: DayKind,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -127,6 +133,9 @@ pub enum Msg {
     StatsToday,
     /// `r`: switch the chart between the per-period bars and the running balance.
     ToggleChartMode,
+    // --- range marking ---
+    /// `V`: drop or clear the anchor of a date range for the day-type keys.
+    ToggleAnchor,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +186,12 @@ pub enum StoreCmd {
     /// Set (or clear, with `None`) the break shares of a session's entries.
     SetBreakShares(Vec<(i64, Option<Minutes>)>),
     Shutdown,
+    // --- range marking ---
+    SetKindRange {
+        from: NaiveDate,
+        to: NaiveDate,
+        kind: DayKind,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

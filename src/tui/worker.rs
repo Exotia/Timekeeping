@@ -4,6 +4,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
 
+use anyhow::bail;
 use chrono::{Datelike, Local, NaiveDate};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tuirealm::event::Event;
@@ -294,6 +295,36 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             StoreReply::Changed("Break split saved".into())
         }
         StoreCmd::Shutdown => StoreReply::Changed(String::new()),
+        // --- range marking ---
+        StoreCmd::SetKindRange { from, to, kind } => {
+            let weekdays: Vec<NaiveDate> = from
+                .iter_days()
+                .take_while(|d| *d <= to)
+                .filter(|d| is_working_day(*d))
+                .collect();
+            if weekdays.is_empty() {
+                bail!("No weekdays between {from} and {to}");
+            }
+            // One pass over the range before the first write: a day with entries
+            // anywhere in it refuses the whole range rather than leaving half of
+            // it marked.
+            if kind != DayKind::Work {
+                let cal = ctx.config.calendar();
+                for day in ctx.store.days_in(from, to, &cal)? {
+                    if weekdays.contains(&day.date) && !day.entries.is_empty() {
+                        bail!("{} has entries; delete them first", day.date);
+                    }
+                }
+            }
+            for d in &weekdays {
+                ctx.store.set_day_kind(*d, &kind)?;
+            }
+            StoreReply::Changed(format!(
+                "{} weekdays set to {}",
+                weekdays.len(),
+                kind.display_name().to_lowercase()
+            ))
+        }
     })
 }
 
@@ -401,6 +432,121 @@ mod tests {
         assert_eq!(
             stats(&ctx, d(2025, 1, 1), d(2025, 1, 31)).carried_in,
             Minutes(60)
+        );
+    }
+
+    // --- range marking ---
+
+    #[test]
+    fn set_kind_range_marks_the_weekdays_and_skips_the_weekend() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let reply = handle(
+            &ctx,
+            StoreCmd::SetKindRange {
+                from: d(2026, 9, 11),
+                to: d(2026, 9, 15),
+                kind: DayKind::Vacation,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reply,
+            StoreReply::Changed("3 weekdays set to vacation".into())
+        );
+        let days = ctx
+            .store
+            .days_in(d(2026, 9, 11), d(2026, 9, 15), &ctx.config.calendar())
+            .unwrap();
+        let kinds: Vec<DayKind> = days.iter().map(|d| d.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                DayKind::Vacation,
+                DayKind::Work,
+                DayKind::Work,
+                DayKind::Vacation,
+                DayKind::Vacation
+            ]
+        );
+    }
+
+    #[test]
+    fn set_kind_range_refuses_when_a_day_has_entries_and_changes_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        handle(
+            &ctx,
+            StoreCmd::AddEntry {
+                date: d(2026, 9, 15),
+                start: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                end: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+                project: "Alpha".into(),
+                comment: String::new(),
+            },
+        )
+        .unwrap();
+        let err = handle(
+            &ctx,
+            StoreCmd::SetKindRange {
+                from: d(2026, 9, 14),
+                to: d(2026, 9, 16),
+                kind: DayKind::Sick,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "2026-09-15 has entries; delete them first");
+        let days = ctx
+            .store
+            .days_in(d(2026, 9, 14), d(2026, 9, 16), &ctx.config.calendar())
+            .unwrap();
+        assert!(
+            days.iter().all(|d| d.kind == DayKind::Work),
+            "nothing was changed: {days:?}"
+        );
+    }
+
+    #[test]
+    fn set_kind_range_over_a_weekend_only_is_an_error() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let err = handle(
+            &ctx,
+            StoreCmd::SetKindRange {
+                from: d(2026, 9, 5),
+                to: d(2026, 9, 6),
+                kind: DayKind::Flex,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No weekdays between 2026-09-05 and 2026-09-06"
+        );
+    }
+
+    #[test]
+    fn set_kind_range_back_to_work_clears_the_marked_days() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        for day in [d(2026, 9, 14), d(2026, 9, 15), d(2026, 9, 16)] {
+            ctx.store.set_day_kind(day, &DayKind::Vacation).unwrap();
+        }
+        let reply = handle(
+            &ctx,
+            StoreCmd::SetKindRange {
+                from: d(2026, 9, 14),
+                to: d(2026, 9, 16),
+                kind: DayKind::Work,
+            },
+        )
+        .unwrap();
+        assert_eq!(reply, StoreReply::Changed("3 weekdays set to work".into()));
+        assert!(
+            ctx.store
+                .stored_kinds_in(d(2026, 9, 14), d(2026, 9, 16))
+                .unwrap()
+                .is_empty()
         );
     }
 }

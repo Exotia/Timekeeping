@@ -134,6 +134,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         chart_mode: msg::ChartMode::default(),
         split_followup: None,
         break_split: None,
+        anchor: None,
     };
     model.load_month();
 

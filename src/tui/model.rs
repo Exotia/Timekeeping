@@ -76,6 +76,9 @@ pub struct Model {
     /// the refresh the write triggers.
     pub split_followup: Option<SplitFollowup>,
     pub break_split: Option<BreakSplitState>,
+    /// The far end of the date range the day-type keys work on, dropped by `V`.
+    /// The range is anchor..cursor in whichever order the two fall.
+    pub anchor: Option<NaiveDate>,
 }
 
 /// What a write that touched a session's break should do once the refreshed day
@@ -758,6 +761,9 @@ impl Model {
             Msg::Back => {
                 if self.help || self.confirm.is_some() {
                     self.close_overlay();
+                } else if self.screen == Screen::Month && self.anchor.is_some() {
+                    self.anchor = None;
+                    self.set_status("Range cleared", false);
                 } else {
                     let was_day = self.screen == Screen::Day;
                     self.screen = Screen::Month;
@@ -837,6 +843,14 @@ impl Model {
                 }
             }
             Msg::SetKind(kind) => {
+                // A range is the worker's to check: one day of it having entries
+                // or falling on a weekend is no reason to refuse the whole thing
+                // here, where only the loaded month is in hand.
+                if let Some(a) = self.anchor {
+                    let (from, to) = (a.min(self.selected), a.max(self.selected));
+                    self.open_confirm(Confirm::SetKindRange { from, to, kind });
+                    return;
+                }
                 let has_entries = self
                     .month
                     .as_ref()
@@ -866,6 +880,11 @@ impl Model {
                     }
                     Confirm::SetKind(d, k) => {
                         self.send(StoreCmd::SetKind(d, k));
+                    }
+                    // --- range marking ---
+                    Confirm::SetKindRange { from, to, kind } => {
+                        self.anchor = None;
+                        self.send(StoreCmd::SetKindRange { from, to, kind });
                     }
                 }
             }
@@ -1153,6 +1172,21 @@ impl Model {
                     }
                 }
             }
+            // --- range marking ---
+            Msg::ToggleAnchor => {
+                if self.anchor.take().is_some() {
+                    self.set_status("Range cleared", false);
+                } else {
+                    self.anchor = Some(self.selected);
+                    self.set_status(
+                        format!(
+                            "Range from {}: v f x p w mark every weekday up to the cursor, V or Esc clears",
+                            self.selected.format("%a %d %b")
+                        ),
+                        false,
+                    );
+                }
+            }
         }
     }
 
@@ -1393,6 +1427,7 @@ impl Model {
                 ("x", "sick"),
                 ("p", "public holiday"),
                 ("w", "reset to work day"),
+                ("V", "start / clear a range for the day-type keys"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("q", "quit"),
             ],
@@ -1425,6 +1460,18 @@ impl Model {
         match c {
             Confirm::DeleteEntry(_) => "Delete this entry?".into(),
             Confirm::SetKind(d, k) => format!("Set {d} to {}?", k.display_name().to_lowercase()),
+            // --- range marking ---
+            Confirm::SetKindRange { from, to, kind } => {
+                let n = from
+                    .iter_days()
+                    .take_while(|d| d <= to)
+                    .filter(|d| crate::core::is_working_day(*d))
+                    .count();
+                format!(
+                    "Set {n} weekdays, {from} to {to}, to {}?",
+                    kind.display_name().to_lowercase()
+                )
+            }
         }
     }
 }
@@ -1496,6 +1543,7 @@ pub mod testing {
             chart_mode: ChartMode::default(),
             split_followup: None,
             break_split: None,
+            anchor: None,
         };
         (m, rx)
     }
@@ -2989,5 +3037,141 @@ mod tests {
         let (m, _rx) = model(d(2026, 9, 15));
         assert!(m.key_hints().contains(&("c", "settings")));
         assert!(m.help_keys().contains(&("c", "settings")));
+    }
+
+    // --- range marking ---
+
+    fn work_days(from: NaiveDate, to: NaiveDate) -> Vec<Day> {
+        from.iter_days()
+            .take_while(|d| *d <= to)
+            .map(|date| Day {
+                date,
+                kind: DayKind::Work,
+                entries: vec![],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn v_drops_and_clears_the_anchor() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        m.month = Some(month_data(
+            today,
+            work_days(d(2026, 9, 1), d(2026, 9, 30)),
+            None,
+        ));
+        m.update(Msg::ToggleAnchor);
+        assert_eq!(m.anchor, Some(today));
+        assert_eq!(
+            m.status.as_ref().unwrap().0,
+            "Range from Tue 15 Sep: v f x p w mark every weekday up to the cursor, V or Esc clears"
+        );
+        m.update(Msg::SelectDay(3));
+        assert_eq!(m.anchor, Some(today), "moving keeps the anchor");
+        m.update(Msg::ToggleAnchor);
+        assert_eq!(m.anchor, None);
+        assert_eq!(m.status.as_ref().unwrap().0, "Range cleared");
+    }
+
+    #[test]
+    fn a_day_type_key_with_an_anchor_confirms_the_whole_range_in_date_order() {
+        let today = d(2026, 9, 18);
+        let (mut m, rx) = model(today);
+        m.month = Some(month_data(
+            today,
+            work_days(d(2026, 9, 1), d(2026, 9, 30)),
+            None,
+        ));
+        m.update(Msg::ToggleAnchor); // anchor Fri 18
+        m.update(Msg::SelectDay(-4)); // cursor Mon 14
+        m.update(Msg::SetKind(DayKind::Vacation));
+        assert_eq!(
+            m.confirm,
+            Some(Confirm::SetKindRange {
+                from: d(2026, 9, 14),
+                to: d(2026, 9, 18),
+                kind: DayKind::Vacation,
+            })
+        );
+        assert_eq!(
+            m.confirm_text(m.confirm.as_ref().unwrap()),
+            "Set 5 weekdays, 2026-09-14 to 2026-09-18, to vacation?"
+        );
+        m.update(Msg::ConfirmNo);
+        assert_eq!(m.anchor, Some(d(2026, 9, 18)), "declining keeps the anchor");
+        m.update(Msg::SetKind(DayKind::Vacation));
+        m.update(Msg::ConfirmYes);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::SetKindRange {
+                from,
+                to,
+                kind: DayKind::Vacation
+            } if from == d(2026, 9, 14) && to == d(2026, 9, 18)
+        ));
+        assert_eq!(m.anchor, None, "applying clears the anchor");
+    }
+
+    #[test]
+    fn esc_clears_the_anchor_before_anything_else() {
+        let today = d(2026, 9, 15);
+        let (mut m, _rx) = model(today);
+        m.month = Some(month_data(
+            today,
+            work_days(d(2026, 9, 1), d(2026, 9, 30)),
+            None,
+        ));
+        m.update(Msg::ToggleAnchor);
+        m.update(Msg::Back);
+        assert_eq!(m.anchor, None);
+        assert_eq!(m.screen, Screen::Month);
+    }
+
+    #[test]
+    fn a_range_over_a_day_with_entries_is_left_to_the_worker() {
+        let today = d(2026, 9, 15);
+        let (mut m, rx) = model(today);
+        let e = crate::core::Entry {
+            id: 1,
+            date: today,
+            start: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            end: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            project: "A".into(),
+            comment: "".into(),
+            break_share: None,
+        };
+        let mut days = work_days(d(2026, 9, 1), d(2026, 9, 30));
+        days.iter_mut().find(|dd| dd.date == today).unwrap().entries = vec![e];
+        m.month = Some(month_data(today, days, None));
+        m.update(Msg::ToggleAnchor);
+        m.update(Msg::SetKind(DayKind::Sick));
+        assert_eq!(
+            m.confirm,
+            Some(Confirm::SetKindRange {
+                from: today,
+                to: today,
+                kind: DayKind::Sick,
+            }),
+            "the single-day pre-checks do not stand in a range's way"
+        );
+        m.update(Msg::ConfirmYes);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            StoreCmd::SetKindRange { .. }
+        ));
+    }
+
+    #[test]
+    fn the_month_help_lists_the_range_key() {
+        let (m, _rx) = model(d(2026, 9, 15));
+        assert!(
+            m.help_keys()
+                .contains(&("V", "start / clear a range for the day-type keys"))
+        );
+        assert!(
+            !m.key_hints().iter().any(|(k, _)| *k == "V"),
+            "the day hint row has no room for it"
+        );
     }
 }
