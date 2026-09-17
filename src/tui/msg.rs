@@ -34,6 +34,12 @@ pub enum ChartMode {
 pub enum Confirm {
     DeleteEntry(i64),
     SetKind(NaiveDate, DayKind),
+    // --- range marking ---
+    SetKindRange {
+        from: NaiveDate,
+        to: NaiveDate,
+        kind: DayKind,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -130,6 +136,9 @@ pub enum Msg {
     // --- backup key ---
     /// `B` on the month screen: copy the database into `<home>/backups/`.
     Backup,
+    // --- range marking ---
+    /// `V`: drop or clear the anchor of a date range for the day-type keys.
+    ToggleAnchor,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +191,12 @@ pub enum StoreCmd {
     Shutdown,
     // --- backup key ---
     Backup,
+    // --- range marking ---
+    SetKindRange {
+        from: NaiveDate,
+        to: NaiveDate,
+        kind: DayKind,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

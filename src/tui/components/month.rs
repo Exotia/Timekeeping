@@ -36,6 +36,7 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('x') => Msg::SetKind(DayKind::Sick),
             Key::Char('p') => Msg::SetKind(DayKind::Holiday),
             Key::Char('w') => Msg::SetKind(DayKind::Work),
+            Key::Char('V') => Msg::ToggleAnchor,
             Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Char('B') => Msg::Backup,
@@ -68,5 +69,12 @@ mod tests {
         let mut c = MonthScreen::default();
         let ev = Event::Keyboard(KeyEvent::new(Key::Char('B'), KeyModifiers::SHIFT));
         assert_eq!(c.on(&ev), Some(Msg::Backup));
+    }
+
+    #[test]
+    fn shift_v_toggles_the_range_anchor() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('V'), KeyModifiers::SHIFT));
+        assert_eq!(c.on(&ev), Some(Msg::ToggleAnchor));
     }
 }
