@@ -221,8 +221,14 @@ recomputed from your break tiers, so an import can never contradict your
 configuration. Projects that do not exist yet are created. Rows that overlap an
 entry you already have, or that land on a day marked vacation, flex, sick or
 holiday, are skipped and listed by line number — so running the same import
-twice is safe, and the second run changes nothing. Day types are not part of any
-of these formats and are not restored.
+twice is safe, and the second run changes nothing.
+
+Two things a file does not carry, so a round trip does not restore them. **Day
+types** are not part of any of these formats. **Manual break splits** are not
+either: if you used `b` in the day editor to move a session's break onto one
+entry, an import re-applies the default rule instead, which leaves the day's net
+and your balance unchanged but moves time between the entries and projects of
+that day.
 
 ```bash
 tk in -p Alpha

@@ -316,7 +316,11 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             StoreReply::Confirm(Confirm::ImportFile {
                 path,
                 imported: report.imported,
-                skipped: report.skipped.len(),
+                skipped: report
+                    .skipped
+                    .iter()
+                    .map(|(line, why)| format!("line {line}: {why}"))
+                    .collect(),
             })
         }
         StoreCmd::Import { path } => {

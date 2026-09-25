@@ -47,7 +47,10 @@ pub enum Confirm {
     ImportFile {
         path: std::path::PathBuf,
         imported: usize,
-        skipped: usize,
+        /// Why each row will not land, already worded for the screen. Carried
+        /// rather than counted: the dialog is the only place a TUI user is
+        /// told, and the reasons are not all the same.
+        skipped: Vec<String>,
     },
 }
 

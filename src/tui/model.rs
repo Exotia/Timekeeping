@@ -1650,11 +1650,15 @@ impl Model {
                 skipped,
             } => {
                 let mut s = format!("Import {imported} entries from {}?", path.display());
-                if *skipped > 0 {
-                    // Named here because this dialog is the only place the user
-                    // sees them before the write happens.
+                if let Some(first) = skipped.first() {
+                    // Shown here because this dialog is the only place the user
+                    // is told before the write happens. The reason is quoted
+                    // rather than guessed: an overlap and a non-work day both
+                    // land here, and saying the wrong one is worse than vague.
+                    let n = skipped.len();
                     s.push_str(&format!(
-                        " {skipped} rows overlap existing entries and will be skipped."
+                        " {n} row{} will be skipped, e.g. {first}",
+                        if n == 1 { "" } else { "s" }
                     ));
                 }
                 s
@@ -3608,7 +3612,7 @@ mod tests {
         m.update(Msg::AskConfirm(Confirm::ImportFile {
             path: "/tmp/in.csv".into(),
             imported: 143,
-            skipped: 12,
+            skipped: (0..12).map(|i| format!("line {i}: overlaps")).collect(),
         }));
         let text = m.confirm_text(m.confirm.as_ref().unwrap());
         assert!(text.contains("143"), "{text}");
@@ -3629,9 +3633,22 @@ mod tests {
         m.update(Msg::AskConfirm(Confirm::ImportFile {
             path: "/tmp/in.csv".into(),
             imported: 1,
-            skipped: 0,
+            skipped: Vec::new(),
         }));
         m.update(Msg::ConfirmNo);
         assert!(rx.try_recv().is_err(), "nothing should have been sent");
+    }
+
+    // Finding 6: the dialog used to assert every skipped row was an overlap.
+    #[test]
+    fn the_import_confirm_does_not_invent_a_skip_reason() {
+        let (m, _rx) = model(d(2026, 9, 25));
+        let text = m.confirm_text(&Confirm::ImportFile {
+            path: "/tmp/in.csv".into(),
+            imported: 1,
+            skipped: vec!["line 2: 2026-09-14 is a vacation day; set it to work first".into()],
+        });
+        assert!(!text.contains("overlap"), "{text}");
+        assert!(text.contains("vacation"), "{text}");
     }
 }
