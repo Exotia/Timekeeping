@@ -278,6 +278,7 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `V` | Start or clear a range: the day-type keys then apply to every weekday from the anchor to the cursor |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `B` | Write a backup of the database to `<home>/backups/` (same as `tk backup`) |
+| `E` | Export to a file; asks for the path, prefilled with `<home>/export-YYYY-MM-DD.csv`. A `.json` extension writes JSON, anything else CSV (same as `tk export`) |
 | `?` | Help |
 | `Esc` | Close an open overlay |
 | `q`, `Ctrl+C` | Quit |

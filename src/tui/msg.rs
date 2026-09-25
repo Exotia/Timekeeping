@@ -138,6 +138,8 @@ pub enum Msg {
     // --- backup key ---
     /// `B` on the month screen: copy the database into `<home>/backups/`.
     Backup,
+    /// `E` on the month screen: ask where to write the export.
+    ExportPrompt,
     // --- range marking ---
     /// `V`: drop or clear the anchor of a date range for the day-type keys.
     ToggleAnchor,
@@ -205,6 +207,10 @@ pub enum StoreCmd {
     Shutdown,
     // --- backup key ---
     Backup,
+    // --- export key ---
+    Export {
+        path: std::path::PathBuf,
+    },
     // --- range marking ---
     SetKindRange {
         from: NaiveDate,

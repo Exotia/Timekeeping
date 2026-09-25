@@ -40,6 +40,7 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
             Key::Char('B') => Msg::Backup,
+            Key::Char('E') => Msg::ExportPrompt,
             Key::Esc => Msg::Back,
             // --- projects screen ---
             Key::Char('P') => Msg::OpenProjects,
@@ -85,5 +86,12 @@ mod tests {
         let mut c = MonthScreen::default();
         let ev = Event::Keyboard(KeyEvent::new(Key::Char('V'), KeyModifiers::SHIFT));
         assert_eq!(c.on(&ev), Some(Msg::ToggleAnchor));
+    }
+
+    #[test]
+    fn shift_e_asks_where_to_export() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('E'), KeyModifiers::SHIFT));
+        assert_eq!(c.on(&ev), Some(Msg::ExportPrompt));
     }
 }

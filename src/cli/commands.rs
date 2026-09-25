@@ -443,52 +443,7 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 Some(t) => parse_date(&t, today)?,
                 None => today,
             };
-            let entries = ctx.store.entries_in(from, to)?;
-            // Both columns are data, not display: they stay ±HH:MM whatever
-            // `hours_format` says.
-            let nets = nets_by_day(&entries, &rules.tiers);
-            let mut text = String::new();
-            match format.as_str() {
-                "csv" => {
-                    text.push_str("date,start,end,project,comment,gross,net,break\n");
-                    for (e, net) in entries.iter().zip(&nets) {
-                        text.push_str(&format!(
-                            "{},{},{},{},{},{},{},{}\n",
-                            e.date,
-                            e.start.format("%H:%M"),
-                            e.end.format("%H:%M"),
-                            csv_quote(&e.project),
-                            csv_quote(&e.comment),
-                            e.duration(),
-                            net,
-                            // What this entry paid towards its session's break:
-                            // never negative, so it carries no sign.
-                            (e.duration() - *net).hhmm()
-                        ));
-                    }
-                }
-                "json" => {
-                    text.push('[');
-                    for (i, (e, net)) in entries.iter().zip(&nets).enumerate() {
-                        if i > 0 {
-                            text.push(',');
-                        }
-                        text.push_str(&format!(
-                            "{{\"date\":\"{}\",\"start\":\"{}\",\"end\":\"{}\",\"project\":{},\"comment\":{},\"gross_minutes\":{},\"net_minutes\":{},\"break_minutes\":{}}}",
-                            e.date,
-                            e.start.format("%H:%M"),
-                            e.end.format("%H:%M"),
-                            json_quote(&e.project),
-                            json_quote(&e.comment),
-                            e.duration().0,
-                            net.0,
-                            (e.duration() - *net).0
-                        ));
-                    }
-                    text.push_str("]\n");
-                }
-                other => bail!("unknown format '{other}'; use csv or json"),
-            }
+            let text = export_text(ctx, &format, from, to)?;
             match output {
                 Some(p) => {
                     std::fs::write(&p, text)?;
@@ -575,6 +530,76 @@ fn json_quote(s: &str) -> String {
     }
     o.push('"');
     o
+}
+
+/// The export as text, so `tk export` and the TUI's `E` build it the same way.
+pub fn export_text(
+    ctx: &Ctx,
+    format: &str,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> anyhow::Result<String> {
+    let rules = ctx.config.rules();
+    let entries = ctx.store.entries_in(from, to)?;
+    // Both columns are data, not display: they stay ±HH:MM whatever
+    // `hours_format` says.
+    let nets = nets_by_day(&entries, &rules.tiers);
+    let mut text = String::new();
+    match format {
+        "csv" => {
+            text.push_str("date,start,end,project,comment,gross,net,break\n");
+            for (e, net) in entries.iter().zip(&nets) {
+                text.push_str(&format!(
+                    "{},{},{},{},{},{},{},{}\n",
+                    e.date,
+                    e.start.format("%H:%M"),
+                    e.end.format("%H:%M"),
+                    csv_quote(&e.project),
+                    csv_quote(&e.comment),
+                    e.duration(),
+                    net,
+                    // What this entry paid towards its session's break:
+                    // never negative, so it carries no sign.
+                    (e.duration() - *net).hhmm()
+                ));
+            }
+        }
+        "json" => {
+            text.push('[');
+            for (i, (e, net)) in entries.iter().zip(&nets).enumerate() {
+                if i > 0 {
+                    text.push(',');
+                }
+                text.push_str(&format!(
+                        "{{\"date\":\"{}\",\"start\":\"{}\",\"end\":\"{}\",\"project\":{},\"comment\":{},\"gross_minutes\":{},\"net_minutes\":{},\"break_minutes\":{}}}",
+                        e.date,
+                        e.start.format("%H:%M"),
+                        e.end.format("%H:%M"),
+                        json_quote(&e.project),
+                        json_quote(&e.comment),
+                        e.duration().0,
+                        net.0,
+                        (e.duration() - *net).0
+                    ));
+            }
+            text.push_str("]\n");
+        }
+        other => bail!("unknown format '{other}'; use csv or json"),
+    }
+    Ok(text)
+}
+
+/// Write the whole range to `path`, picking the format from its extension.
+/// `E` in the TUI takes this route; the CLI's `--format` flag takes the other.
+pub fn write_export(ctx: &Ctx, path: &Path) -> anyhow::Result<()> {
+    let format = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("json") => "json",
+        _ => "csv",
+    };
+    let rules = ctx.config.rules();
+    let text = export_text(ctx, format, rules.start_date, now_local().date())?;
+    std::fs::write(path, text)?;
+    Ok(())
 }
 
 #[cfg(test)]

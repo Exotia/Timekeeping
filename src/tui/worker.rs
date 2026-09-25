@@ -301,6 +301,11 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             let path = crate::cli::commands::write_backup(ctx, crate::cli::commands::now_local())?;
             StoreReply::Changed(format!("Backup written to {}", path.display()))
         }
+        // --- export key ---
+        StoreCmd::Export { path } => {
+            crate::cli::commands::write_export(ctx, &path)?;
+            StoreReply::Changed(format!("Exported to {}", path.display()))
+        }
         // --- range marking ---
         StoreCmd::SetKindRange { from, to, kind } => {
             let weekdays: Vec<NaiveDate> = from
@@ -733,5 +738,18 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn export_writes_the_file_and_says_so() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let out = home.path().join("out.csv");
+        let reply = handle(&ctx, StoreCmd::Export { path: out.clone() }).unwrap();
+        let StoreReply::Changed(msg) = reply else {
+            panic!("expected Changed, got {reply:?}")
+        };
+        assert!(msg.starts_with("Exported to "), "{msg}");
+        assert!(out.exists());
     }
 }

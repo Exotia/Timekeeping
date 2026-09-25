@@ -94,6 +94,7 @@ pub struct Model {
 pub enum PromptKind {
     RenameProject { old: String },
     AddProject,
+    ExportPath,
 }
 
 /// What a write that touched a session's break should do once the refreshed day
@@ -656,12 +657,12 @@ impl Model {
     }
 
     /// Mount a fresh name box over the projects screen and give it focus.
-    fn open_prompt(&mut self, title: String, initial: &str, kind: PromptKind) {
+    fn open_prompt(&mut self, title: String, label: &str, initial: &str, kind: PromptKind) {
         let _ = self.app.umount(&Id::Prompt);
         let _ = self.app.mount(
             Id::Prompt,
             Box::new(
-                components::text_prompt::TextPrompt::new(title, "Name", initial)
+                components::text_prompt::TextPrompt::new(title, label, initial)
                     .with_theme(&self.theme),
             ),
             vec![],
@@ -1271,6 +1272,7 @@ impl Model {
                 if let Some(p) = self.highlighted_project().cloned() {
                     self.open_prompt(
                         "Rename project".into(),
+                        "Name",
                         &p.name,
                         PromptKind::RenameProject {
                             old: p.name.clone(),
@@ -1278,7 +1280,19 @@ impl Model {
                     );
                 }
             }
-            Msg::ProjectsAdd => self.open_prompt("New project".into(), "", PromptKind::AddProject),
+            Msg::ProjectsAdd => {
+                self.open_prompt("New project".into(), "Name", "", PromptKind::AddProject)
+            }
+            Msg::ExportPrompt => {
+                // Into the data directory, where backups already go: always
+                // writable, and the user knows where it is.
+                let default = self
+                    .home
+                    .join(format!("export-{}.csv", self.today))
+                    .display()
+                    .to_string();
+                self.open_prompt("Export".into(), "Path", &default, PromptKind::ExportPath);
+            }
             Msg::PromptChanged => {}
             Msg::PromptSubmit(text) => {
                 let Some(kind) = self.prompt.clone() else {
@@ -1286,7 +1300,11 @@ impl Model {
                 };
                 let name = text.trim().to_string();
                 if name.is_empty() {
-                    self.set_status("Name must not be empty", true);
+                    let what = match kind {
+                        PromptKind::ExportPath => "Path",
+                        _ => "Name",
+                    };
+                    self.set_status(format!("{what} must not be empty"), true);
                     return;
                 }
                 self.close_prompt();
@@ -1298,6 +1316,7 @@ impl Model {
                         self.send(StoreCmd::RenameProject { old, new: name })
                     }
                     PromptKind::AddProject => self.send(StoreCmd::AddProject(name)),
+                    PromptKind::ExportPath => self.send(StoreCmd::Export { path: name.into() }),
                 }
             }
             Msg::PromptCancel => self.close_prompt(),
@@ -1571,6 +1590,7 @@ impl Model {
                 ("V", "start / clear a range for the day-type keys"),
                 ("u", "toggle h:mm / decimal hours"),
                 ("B", "back up the database"),
+                ("E", "export to a file"),
                 ("q", "quit"),
             ],
             Screen::Day => &[
@@ -3525,5 +3545,20 @@ mod tests {
             m.help_keys()
                 .contains(&("P", "projects: archive, rename, add"))
         );
+    }
+
+    #[test]
+    fn the_export_prompt_opens_prefilled_and_submits_a_path() {
+        let (mut m, rx) = model(d(2026, 9, 25));
+        m.update(Msg::ExportPrompt);
+        assert!(matches!(m.prompt, Some(PromptKind::ExportPath)));
+        m.update(Msg::PromptSubmit("/tmp/out.csv".into()));
+        assert!(m.prompt.is_none());
+        match rx.try_recv().unwrap() {
+            StoreCmd::Export { path } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/out.csv"))
+            }
+            other => panic!("expected Export, got {other:?}"),
+        }
     }
 }
