@@ -41,6 +41,7 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('?') => Msg::ToggleHelp,
             Key::Char('B') => Msg::Backup,
             Key::Char('E') => Msg::ExportPrompt,
+            Key::Char('I') => Msg::ImportPrompt,
             Key::Esc => Msg::Back,
             // --- projects screen ---
             Key::Char('P') => Msg::OpenProjects,
@@ -93,5 +94,19 @@ mod tests {
         let mut c = MonthScreen::default();
         let ev = Event::Keyboard(KeyEvent::new(Key::Char('E'), KeyModifiers::SHIFT));
         assert_eq!(c.on(&ev), Some(Msg::ExportPrompt));
+    }
+
+    #[test]
+    fn shift_i_asks_which_file_to_import() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('I'), KeyModifiers::SHIFT));
+        assert_eq!(c.on(&ev), Some(Msg::ImportPrompt));
+    }
+
+    #[test]
+    fn lowercase_i_still_opens_the_clock_picker() {
+        let mut c = MonthScreen::default();
+        let ev = Event::Keyboard(KeyEvent::new(Key::Char('i'), KeyModifiers::NONE));
+        assert_eq!(c.on(&ev), Some(Msg::OpenClockPicker));
     }
 }

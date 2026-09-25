@@ -95,6 +95,7 @@ pub enum PromptKind {
     RenameProject { old: String },
     AddProject,
     ExportPath,
+    ImportPath,
 }
 
 /// What a write that touched a session's break should do once the refreshed day
@@ -942,6 +943,8 @@ impl Model {
                         self.anchor = None;
                         self.send(StoreCmd::SetKindRange { from, to, kind });
                     }
+                    // --- import key ---
+                    Confirm::ImportFile { path, .. } => self.send(StoreCmd::Import { path }),
                 }
             }
             Msg::ToggleHours => {
@@ -1293,6 +1296,9 @@ impl Model {
                     .to_string();
                 self.open_prompt("Export".into(), "Path", &default, PromptKind::ExportPath);
             }
+            Msg::ImportPrompt => {
+                self.open_prompt("Import".into(), "Path", "", PromptKind::ImportPath)
+            }
             Msg::PromptChanged => {}
             Msg::PromptSubmit(text) => {
                 let Some(kind) = self.prompt.clone() else {
@@ -1301,7 +1307,7 @@ impl Model {
                 let name = text.trim().to_string();
                 if name.is_empty() {
                     let what = match kind {
-                        PromptKind::ExportPath => "Path",
+                        PromptKind::ExportPath | PromptKind::ImportPath => "Path",
                         _ => "Name",
                     };
                     self.set_status(format!("{what} must not be empty"), true);
@@ -1317,6 +1323,9 @@ impl Model {
                     }
                     PromptKind::AddProject => self.send(StoreCmd::AddProject(name)),
                     PromptKind::ExportPath => self.send(StoreCmd::Export { path: name.into() }),
+                    PromptKind::ImportPath => {
+                        self.send(StoreCmd::ImportDryRun { path: name.into() })
+                    }
                 }
             }
             Msg::PromptCancel => self.close_prompt(),
@@ -1345,6 +1354,8 @@ impl Model {
                 self.day = Some(d);
             }
             StoreReply::Stats(s) => self.stats = Some(s),
+            // --- import key ---
+            StoreReply::Confirm(c) => self.open_confirm(c),
             StoreReply::Changed(msg) => {
                 if !msg.is_empty() {
                     self.set_status(msg, false);
@@ -1591,6 +1602,7 @@ impl Model {
                 ("u", "toggle h:mm / decimal hours"),
                 ("B", "back up the database"),
                 ("E", "export to a file"),
+                ("I", "import a file (asks first)"),
                 ("q", "quit"),
             ],
             Screen::Day => &[
@@ -1631,6 +1643,22 @@ impl Model {
         match c {
             Confirm::DeleteEntry(_) => "Delete this entry?".into(),
             Confirm::SetKind(d, k) => format!("Set {d} to {}?", k.display_name().to_lowercase()),
+            // --- import key ---
+            Confirm::ImportFile {
+                path,
+                imported,
+                skipped,
+            } => {
+                let mut s = format!("Import {imported} entries from {}?", path.display());
+                if *skipped > 0 {
+                    // Named here because this dialog is the only place the user
+                    // sees them before the write happens.
+                    s.push_str(&format!(
+                        " {skipped} rows overlap existing entries and will be skipped."
+                    ));
+                }
+                s
+            }
             // --- range marking ---
             Confirm::SetKindRange { from, to, kind } => {
                 let n = from
@@ -3560,5 +3588,50 @@ mod tests {
             }
             other => panic!("expected Export, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn import_dry_runs_then_confirms_then_writes() {
+        let (mut m, rx) = model(d(2026, 9, 25));
+        m.update(Msg::ImportPrompt);
+        assert!(matches!(m.prompt, Some(PromptKind::ImportPath)));
+
+        m.update(Msg::PromptSubmit("/tmp/in.csv".into()));
+        match rx.try_recv().unwrap() {
+            StoreCmd::ImportDryRun { path } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/in.csv"))
+            }
+            other => panic!("expected ImportDryRun, got {other:?}"),
+        }
+
+        // The dry run's counts come back as the confirm dialog.
+        m.update(Msg::AskConfirm(Confirm::ImportFile {
+            path: "/tmp/in.csv".into(),
+            imported: 143,
+            skipped: 12,
+        }));
+        let text = m.confirm_text(m.confirm.as_ref().unwrap());
+        assert!(text.contains("143"), "{text}");
+        assert!(text.contains("12"), "{text}");
+
+        m.update(Msg::ConfirmYes);
+        match rx.try_recv().unwrap() {
+            StoreCmd::Import { path } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/in.csv"))
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declining_the_import_confirm_writes_nothing() {
+        let (mut m, rx) = model(d(2026, 9, 25));
+        m.update(Msg::AskConfirm(Confirm::ImportFile {
+            path: "/tmp/in.csv".into(),
+            imported: 1,
+            skipped: 0,
+        }));
+        m.update(Msg::ConfirmNo);
+        assert!(rx.try_recv().is_err(), "nothing should have been sent");
     }
 }

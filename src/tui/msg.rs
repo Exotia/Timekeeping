@@ -42,6 +42,13 @@ pub enum Confirm {
         to: NaiveDate,
         kind: DayKind,
     },
+    // --- import key ---
+    /// The dry run's counts, shown before anything is written.
+    ImportFile {
+        path: std::path::PathBuf,
+        imported: usize,
+        skipped: usize,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -140,6 +147,8 @@ pub enum Msg {
     Backup,
     /// `E` on the month screen: ask where to write the export.
     ExportPrompt,
+    /// `I` on the month screen: ask which file to import.
+    ImportPrompt,
     // --- range marking ---
     /// `V`: drop or clear the anchor of a date range for the day-type keys.
     ToggleAnchor,
@@ -209,6 +218,13 @@ pub enum StoreCmd {
     Backup,
     // --- export key ---
     Export {
+        path: std::path::PathBuf,
+    },
+    // --- import key ---
+    ImportDryRun {
+        path: std::path::PathBuf,
+    },
+    Import {
         path: std::path::PathBuf,
     },
     // --- range marking ---
@@ -300,6 +316,9 @@ pub enum StoreReply {
         message: String,
     },
     Failed(String),
+    // --- import key ---
+    /// A dry run's result, asked about before anything is written.
+    Confirm(Confirm),
     // --- projects screen ---
     Projects(ProjectsData),
 }

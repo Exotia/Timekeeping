@@ -11,7 +11,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tuirealm::event::Event;
 use tuirealm::listener::{PollAsync, PortError, PortResult};
 
-use super::msg::{DayData, MonthData, ProjectsData, StatsData, StoreCmd, StoreReply, UserEvent};
+use super::msg::{
+    Confirm, DayData, MonthData, ProjectsData, StatsData, StoreCmd, StoreReply, UserEvent,
+};
 use crate::cli::Ctx;
 use crate::core::{
     DayKind, Entry, Minutes, TodayCtx, day_stats, deduction, is_working_day, running_balance,
@@ -305,6 +307,21 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
         StoreCmd::Export { path } => {
             crate::cli::commands::write_export(ctx, &path)?;
             StoreReply::Changed(format!("Exported to {}", path.display()))
+        }
+        // --- import key ---
+        // Both arms go through the one shared function, so what the confirm
+        // dialog promises and what the write does cannot drift apart.
+        StoreCmd::ImportDryRun { path } => {
+            let (report, _) = crate::cli::commands::import_file(ctx, &path, true)?;
+            StoreReply::Confirm(Confirm::ImportFile {
+                path,
+                imported: report.imported,
+                skipped: report.skipped.len(),
+            })
+        }
+        StoreCmd::Import { path } => {
+            let (_, msg) = crate::cli::commands::import_file(ctx, &path, false)?;
+            StoreReply::Changed(msg)
         }
         // --- range marking ---
         StoreCmd::SetKindRange { from, to, kind } => {
@@ -751,5 +768,38 @@ mod tests {
         };
         assert!(msg.starts_with("Exported to "), "{msg}");
         assert!(out.exists());
+    }
+
+    #[test]
+    fn import_dry_run_reports_without_writing() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let csv = home.path().join("in.csv");
+        std::fs::write(
+            &csv,
+            "date,start,end,project,comment,gross,net,break\n\
+             2026-09-14,09:00,15:30,Alpha,note,06:30,05:42,00:48\n",
+        )
+        .unwrap();
+        let reply = handle(&ctx, StoreCmd::ImportDryRun { path: csv.clone() }).unwrap();
+        assert!(matches!(
+            reply,
+            StoreReply::Confirm(_) | StoreReply::Failed(_)
+        ));
+        assert!(ctx.store.project_by_name("Alpha").unwrap().is_none());
+    }
+
+    // Review Focus 5, TUI half: a bad path is a status line, never a panic.
+    #[test]
+    fn importing_a_missing_file_replies_failed() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let reply = handle(
+            &ctx,
+            StoreCmd::Import {
+                path: "/nope/missing.csv".into(),
+            },
+        );
+        assert!(reply.is_err() || matches!(reply, Ok(StoreReply::Failed(_))));
     }
 }
