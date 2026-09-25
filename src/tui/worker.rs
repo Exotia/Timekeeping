@@ -2,17 +2,20 @@
 //! that carries its replies back into the tui-realm event listener.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
+use std::time::SystemTime;
 
 use anyhow::bail;
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{DateTime, Datelike, Local, NaiveDate};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tuirealm::event::Event;
 use tuirealm::listener::{PollAsync, PortError, PortResult};
 
 use super::msg::{
-    Confirm, DayData, MonthData, ProjectsData, StatsData, StoreCmd, StoreReply, UserEvent,
+    Confirm, DayData, ImportCandidate, MonthData, ProjectsData, StatsData, StoreCmd, StoreReply,
+    UserEvent,
 };
 use crate::cli::Ctx;
 use crate::core::{
@@ -304,6 +307,7 @@ fn handle(ctx: &Ctx, cmd: StoreCmd) -> anyhow::Result<StoreReply> {
             StoreReply::Changed(format!("Exported to {}", path.display()))
         }
         // --- import key ---
+        StoreCmd::ListImportable => StoreReply::Importable(importable_in(&ctx.home)),
         // Both arms go through the one shared function, so what the confirm
         // dialog promises and what the write does cannot drift apart.
         StoreCmd::ImportDryRun { path } => {
@@ -421,6 +425,49 @@ impl PollAsync<UserEvent> for StorePort {
                 "the store thread stopped sending replies".into(),
             )),
         }
+    }
+}
+
+/// The files in the data directory that `import` could read, newest first.
+///
+/// Only `.csv` and `.json`: those are the three formats the parser knows, and
+/// offering anything else would be offering a certain failure.
+fn importable_in(home: &Path) -> Vec<ImportCandidate> {
+    let Ok(dir) = std::fs::read_dir(home) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(SystemTime, ImportCandidate)> = dir
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let path = e.path();
+            let ext = path.extension()?.to_str()?.to_lowercase();
+            if ext != "csv" && ext != "json" {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let modified = meta.modified().ok()?;
+            let when: DateTime<Local> = modified.into();
+            let label = format!(
+                "{:<30} {:>9}  {}",
+                path.file_name()?.to_string_lossy(),
+                human_size(meta.len()),
+                when.format("%d %b %H:%M")
+            );
+            Some((modified, ImportCandidate { path, label }))
+        })
+        .collect();
+    found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    found.into_iter().map(|(_, c)| c).collect()
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{:.0} kB", b as f64 / 1024.0),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
     }
 }
 
@@ -778,5 +825,40 @@ mod tests {
             },
         );
         assert!(reply.is_err() || matches!(reply, Ok(StoreReply::Failed(_))));
+    }
+
+    #[test]
+    fn listing_importable_files_finds_csv_and_json_newest_first() {
+        use std::time::{Duration, SystemTime};
+        let home = tempfile::tempdir().unwrap();
+        let ctx = ctx(home.path());
+        let write = |name: &str, age_secs: u64| {
+            let p = home.path().join(name);
+            std::fs::write(&p, "x").unwrap();
+            let f = std::fs::File::options().write(true).open(&p).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(age_secs))
+                .unwrap();
+        };
+        write("old.csv", 9000);
+        write("new.json", 10);
+        write("middle.csv", 500);
+        // Neither of these is importable, and both live in the data directory.
+        write("config.toml", 5);
+        write("tk.db", 5);
+
+        let reply = handle(&ctx, StoreCmd::ListImportable).unwrap();
+        let StoreReply::Importable(found) = reply else {
+            panic!("expected Importable, got {reply:?}")
+        };
+        let names: Vec<String> = found
+            .iter()
+            .map(|c| c.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["new.json", "middle.csv", "old.csv"],
+            "{names:?}"
+        );
+        assert!(found[0].label.contains("new.json"), "{:?}", found[0].label);
     }
 }

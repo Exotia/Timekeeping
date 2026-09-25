@@ -14,8 +14,8 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 use super::components;
 use super::ids::Id;
 use super::msg::{
-    ChartMode, Confirm, DayData, FormData, MonthData, Msg, ProjectsData, RangeKind, SettingsData,
-    StatsData, StoreCmd, StoreReply, UserEvent,
+    ChartMode, Confirm, DayData, FormData, ImportCandidate, MonthData, Msg, ProjectsData,
+    RangeKind, SettingsData, StatsData, StoreCmd, StoreReply, UserEvent,
 };
 use super::theme::Theme;
 use super::view::chrome;
@@ -62,6 +62,10 @@ pub struct Model {
     pub form: Option<FormState>,
     pub settings: Option<SettingsState>,
     pub clock_picker: Option<ClockPickerState>,
+    // --- import picker ---
+    /// The files the import picker is offering, while it is open. Held here
+    /// because the picker works in labels and the worker needs the path.
+    pub importable: Option<Vec<ImportCandidate>>,
     /// How every duration on screen is spelled; `u` flips it and writes it back
     /// to `config.toml`.
     pub hours: HoursFormat,
@@ -95,7 +99,6 @@ pub enum PromptKind {
     RenameProject { old: String },
     AddProject,
     ExportPath,
-    ImportPath,
 }
 
 /// What a write that touched a session's break should do once the refreshed day
@@ -642,6 +645,49 @@ impl Model {
         );
         self.clock_picker = Some(ClockPickerState { action });
         self.focus(Id::ClockPicker);
+    }
+
+    // --- import picker ---
+
+    /// Mount the import overlay over the month screen and give it focus.
+    fn open_file_picker(&mut self, files: Vec<ImportCandidate>) {
+        let _ = self.app.umount(&Id::FilePicker);
+        let labels = files.iter().map(|c| c.label.clone()).collect();
+        let _ = self.app.mount(
+            Id::FilePicker,
+            Box::new(
+                components::file_picker::FilePicker::new("Import".into(), labels)
+                    .with_theme(&self.theme),
+            ),
+            vec![],
+        );
+        self.importable = Some(files);
+        self.focus(Id::FilePicker);
+    }
+
+    fn close_file_picker(&mut self) {
+        self.importable = None;
+        let _ = self.app.umount(&Id::FilePicker);
+        self.focus_screen();
+    }
+
+    /// The path behind what the picker submitted: the offer with that label,
+    /// or the text taken as a path — relative to the data directory, because
+    /// that is the directory the offers came from.
+    fn importable_path(&self, submitted: &str) -> PathBuf {
+        if let Some(c) = self
+            .importable
+            .as_ref()
+            .and_then(|f| f.iter().find(|c| c.label == submitted))
+        {
+            return c.path.clone();
+        }
+        let p = PathBuf::from(submitted.trim());
+        if p.is_absolute() {
+            p
+        } else {
+            self.home.join(p)
+        }
     }
 
     fn close_clock_picker(&mut self) {
@@ -1295,9 +1341,14 @@ impl Model {
                     .to_string();
                 self.open_prompt("Export".into(), "Path", &default, PromptKind::ExportPath);
             }
-            Msg::ImportPrompt => {
-                self.open_prompt("Import".into(), "Path", "", PromptKind::ImportPath)
+            Msg::ImportPrompt => self.send(StoreCmd::ListImportable),
+            Msg::FilePickerChanged => {}
+            Msg::FilePickerSubmit(text) => {
+                let path = self.importable_path(&text);
+                self.close_file_picker();
+                self.send(StoreCmd::ImportDryRun { path });
             }
+            Msg::FilePickerCancel => self.close_file_picker(),
             Msg::PromptChanged => {}
             Msg::PromptSubmit(text) => {
                 let Some(kind) = self.prompt.clone() else {
@@ -1306,7 +1357,7 @@ impl Model {
                 let name = text.trim().to_string();
                 if name.is_empty() {
                     let what = match kind {
-                        PromptKind::ExportPath | PromptKind::ImportPath => "Path",
+                        PromptKind::ExportPath => "Path",
                         _ => "Name",
                     };
                     self.set_status(format!("{what} must not be empty"), true);
@@ -1322,9 +1373,6 @@ impl Model {
                     }
                     PromptKind::AddProject => self.send(StoreCmd::AddProject(name)),
                     PromptKind::ExportPath => self.send(StoreCmd::Export { path: name.into() }),
-                    PromptKind::ImportPath => {
-                        self.send(StoreCmd::ImportDryRun { path: name.into() })
-                    }
                 }
             }
             Msg::PromptCancel => self.close_prompt(),
@@ -1355,6 +1403,17 @@ impl Model {
             StoreReply::Stats(s) => self.stats = Some(s),
             // --- import key ---
             StoreReply::Confirm(c) => self.open_confirm(c),
+            StoreReply::Importable(files) => {
+                if files.is_empty() {
+                    // An empty picker would just be a box to type into; say
+                    // where nothing was found, and let them type a path.
+                    self.set_status(
+                        format!("No .csv or .json in {}", self.home.display()),
+                        false,
+                    );
+                }
+                self.open_file_picker(files);
+            }
             StoreReply::Changed(msg) => {
                 if !msg.is_empty() {
                     self.set_status(msg, false);
@@ -1421,6 +1480,7 @@ impl Model {
         let picker_open = self.clock_picker.is_some();
         let split_open = self.break_split.is_some();
         let prompt_open = self.prompt.is_some();
+        let file_picker_open = self.importable.is_some();
         let _ = term.draw(|f| {
             self.draw(f);
             let area = f.area();
@@ -1438,6 +1498,9 @@ impl Model {
             }
             if prompt_open {
                 self.app.view(&Id::Prompt, f, area);
+            }
+            if file_picker_open {
+                self.app.view(&Id::FilePicker, f, area);
             }
         });
         self.terminal = Some(term);
@@ -1740,6 +1803,7 @@ pub mod testing {
             form: None,
             settings: None,
             clock_picker: None,
+            importable: None,
             hours: HoursFormat::Hm,
             stats_anchor: today,
             chart_mode: ChartMode::default(),
@@ -3588,16 +3652,6 @@ mod tests {
     #[test]
     fn import_dry_runs_then_confirms_then_writes() {
         let (mut m, rx) = model(d(2026, 9, 25));
-        m.update(Msg::ImportPrompt);
-        assert!(matches!(m.prompt, Some(PromptKind::ImportPath)));
-
-        m.update(Msg::PromptSubmit("/tmp/in.csv".into()));
-        match rx.try_recv().unwrap() {
-            StoreCmd::ImportDryRun { path } => {
-                assert_eq!(path, std::path::PathBuf::from("/tmp/in.csv"))
-            }
-            other => panic!("expected ImportDryRun, got {other:?}"),
-        }
 
         // The dry run's counts come back as the confirm dialog.
         m.update(Msg::AskConfirm(Confirm::ImportFile {
@@ -3641,5 +3695,49 @@ mod tests {
         });
         assert!(!text.contains("overlap"), "{text}");
         assert!(text.contains("vacation"), "{text}");
+    }
+
+    #[test]
+    fn i_asks_the_worker_what_is_importable() {
+        let (mut m, rx) = model(d(2026, 9, 25));
+        m.update(Msg::ImportPrompt);
+        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::ListImportable));
+    }
+
+    #[test]
+    fn the_offered_files_open_the_picker_and_submit_their_path() {
+        let (mut m, rx) = model(d(2026, 9, 25));
+        m.update(Msg::ImportPrompt);
+        let _ = rx.try_recv();
+        m.on_store(StoreReply::Importable(vec![ImportCandidate {
+            path: std::path::PathBuf::from("/data/export-2026-09-25.csv"),
+            label: "export-2026-09-25.csv   657 B   today".into(),
+        }]));
+        assert!(m.app.mounted(&Id::FilePicker));
+        m.update(Msg::FilePickerSubmit(
+            "export-2026-09-25.csv   657 B   today".into(),
+        ));
+        match rx.try_recv().unwrap() {
+            StoreCmd::ImportDryRun { path } => assert_eq!(
+                path,
+                std::path::PathBuf::from("/data/export-2026-09-25.csv")
+            ),
+            other => panic!("expected ImportDryRun, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_typed_path_that_matches_no_offer_is_used_as_given() {
+        let (mut m, rx) = model(d(2026, 9, 25));
+        m.update(Msg::ImportPrompt);
+        let _ = rx.try_recv();
+        m.on_store(StoreReply::Importable(Vec::new()));
+        m.update(Msg::FilePickerSubmit("/tmp/elsewhere.csv".into()));
+        match rx.try_recv().unwrap() {
+            StoreCmd::ImportDryRun { path } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/elsewhere.csv"))
+            }
+            other => panic!("expected ImportDryRun, got {other:?}"),
+        }
     }
 }

@@ -74,10 +74,11 @@ pub enum FieldFormEvent {
     Ignored,
 }
 
-/// The known project names containing `query`, case-insensitively.
-pub fn filter_projects(projects: &[String], query: &str) -> Vec<String> {
+/// The names containing `query`, case-insensitively — projects for the entry
+/// form and the clock-in picker, filenames for the import picker.
+pub fn filter_names(names: &[String], query: &str) -> Vec<String> {
     let q = query.trim().to_lowercase();
-    projects
+    names
         .iter()
         .filter(|p| p.to_lowercase().contains(&q))
         .cloned()

@@ -1,10 +1,11 @@
-//! The clock-in / switch overlay: one project field with the entry form's picker.
+//! The import overlay: pick one of the files already in the data directory.
 //!
-//! `i` on the month view opens it, titled for what it is about to do: clocking in
-//! on a project, or switching away from the one that is running. The field, the
-//! keys and the footer are [`FieldForm`]; the filtered list of known projects and
-//! its highlight are the same [`picker_line`] the entry form draws, so both
-//! overlays offer projects in exactly the same way.
+//! `I` on the month view opens it. It is the [`ProjectPicker`]'s shape — one
+//! [`FieldForm`] field over a filtered list — because the two choices are the
+//! same shape: type to narrow the offers, or type something not offered and
+//! have that taken literally. Here that fallback is a path to a file elsewhere.
+//!
+//! [`ProjectPicker`]: super::project_picker::ProjectPicker
 
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
@@ -21,29 +22,27 @@ use crate::tui::theme::Theme;
 use crate::tui::view::chrome::centered;
 
 fn fields() -> Vec<FieldSpec> {
-    vec![FieldSpec::new("Project", "type to filter, up/down to pick")]
+    vec![FieldSpec::new("File", "type to filter, up/down to pick")]
 }
 
-/// Width and height of the overlay: one field, the offered projects, the footer.
+/// Width and height of the overlay: one field, the offered files, the footer.
 const WIDTH: u16 = 64;
 const HEIGHT: u16 = 7;
 
-pub struct ProjectPicker {
+pub struct FilePicker {
     form: FieldForm,
     title: String,
-    projects: Vec<String>,
+    files: Vec<String>,
     idx: usize,
 }
 
-impl ProjectPicker {
-    /// `projects` is offered in the order given, so the caller decides what the
-    /// overlay preselects (the last used project) and what it leaves out (the
-    /// project already running).
-    pub fn new(title: String, projects: Vec<String>) -> Self {
+impl FilePicker {
+    /// `files` is offered in the order given — the caller sorts, newest first.
+    pub fn new(title: String, files: Vec<String>) -> Self {
         Self {
             form: FieldForm::new(&fields(), &[String::new()]),
             title,
-            projects,
+            files,
             idx: 0,
         }
     }
@@ -55,11 +54,11 @@ impl ProjectPicker {
     }
 
     fn matches(&self) -> Vec<String> {
-        filter_names(&self.projects, &self.form.value(0))
+        filter_names(&self.files, &self.form.value(0))
     }
 
-    /// What a submit takes: the highlighted project, or — with nothing matching the
-    /// typed text — that text, which the store turns into a new project.
+    /// What a submit takes: the highlighted file, or — with nothing matching the
+    /// typed text — that text, which the model reads as a path.
     fn picked(&self) -> String {
         self.matches()
             .get(self.idx)
@@ -68,7 +67,7 @@ impl ProjectPicker {
     }
 }
 
-impl Component for ProjectPicker {
+impl Component for FilePicker {
     fn view(&mut self, f: &mut Frame, area: Rect) {
         let r = centered(area, WIDTH, HEIGHT);
         f.render_widget(Clear, r);
@@ -104,34 +103,32 @@ impl Component for ProjectPicker {
     }
 }
 
-impl AppComponent<Msg, UserEvent> for ProjectPicker {
+impl AppComponent<Msg, UserEvent> for FilePicker {
     fn on(&mut self, ev: &Event<UserEvent>) -> Option<Msg> {
         let k = *ev.as_keyboard()?;
-        // The arrows move the highlight (there is only one field to focus), and Tab
-        // accepts it — the same keys the entry form's project field answers to.
         if !k.modifiers.contains(KeyModifiers::CONTROL) {
             match k.code {
                 Key::Down => {
                     let last = self.matches().len().saturating_sub(1);
                     self.idx = (self.idx + 1).min(last);
-                    return Some(Msg::ClockPickerChanged);
+                    return Some(Msg::FilePickerChanged);
                 }
                 Key::Up => {
                     self.idx = self.idx.saturating_sub(1);
-                    return Some(Msg::ClockPickerChanged);
+                    return Some(Msg::FilePickerChanged);
                 }
-                Key::Tab => return Some(Msg::ClockPickerSubmit(self.picked())),
+                Key::Tab => return Some(Msg::FilePickerSubmit(self.picked())),
                 _ => {}
             }
         }
         match self.form.handle_key(&k) {
             FieldFormEvent::Quit => Some(Msg::Quit),
-            FieldFormEvent::Submit => Some(Msg::ClockPickerSubmit(self.picked())),
-            FieldFormEvent::Cancel => Some(Msg::ClockPickerCancel),
+            FieldFormEvent::Submit => Some(Msg::FilePickerSubmit(self.picked())),
+            FieldFormEvent::Cancel => Some(Msg::FilePickerCancel),
             FieldFormEvent::Changed => {
                 // The filter moved: start again at the first match.
                 self.idx = 0;
-                Some(Msg::ClockPickerChanged)
+                Some(Msg::FilePickerChanged)
             }
             FieldFormEvent::Ignored => None,
         }
@@ -150,67 +147,65 @@ mod tests {
         Event::Keyboard(KeyEvent::new(k, KeyModifiers::NONE))
     }
 
-    fn picker() -> ProjectPicker {
-        ProjectPicker::new(
-            "Switch project — currently Alpha".into(),
-            vec!["Beta".into(), "Gamma".into(), "beta-two".into()],
+    fn picker() -> FilePicker {
+        FilePicker::new(
+            "Import".into(),
+            vec![
+                "export-2026-09-25.csv".into(),
+                "hours.json".into(),
+                "timesheet.csv".into(),
+            ],
         )
     }
 
     #[test]
-    fn draws_its_title_the_field_and_the_projects() {
+    fn draws_its_title_the_field_and_the_files() {
         let mut p = picker();
         let rows = render(80, 24, |fr| {
             let area = fr.area();
             p.view(fr, area);
         });
-        assert!(contains(&rows, "Switch project"), "{rows:?}");
-        assert!(contains(&rows, "currently Alpha"), "{rows:?}");
-        assert!(contains(&rows, "Project"), "{rows:?}");
-        assert!(contains(&rows, "Beta"), "{rows:?}");
-        assert!(contains(&rows, "Gamma"), "{rows:?}");
+        assert!(contains(&rows, "Import"), "{rows:?}");
+        assert!(contains(&rows, "File"), "{rows:?}");
+        assert!(contains(&rows, "export-2026-09-25.csv"), "{rows:?}");
         assert!(contains(&rows, "Esc cancel"), "the key hints: {rows:?}");
     }
 
     #[test]
-    fn typing_filters_and_enter_submits_the_highlighted_project() {
-        let mut p = picker();
+    fn typing_filters_and_enter_submits_the_highlighted_file() {
         // Nothing typed: the first offer is what Enter takes.
+        let mut p = picker();
         assert_eq!(
             p.on(&key(Key::Enter)),
-            Some(Msg::ClockPickerSubmit("Beta".into()))
+            Some(Msg::FilePickerSubmit("export-2026-09-25.csv".into()))
         );
+
         let mut p = picker();
-        for c in "bet".chars() {
+        for c in "csv".chars() {
             p.on(&key(Key::Char(c)));
         }
-        // The filter is case-insensitive, and ↓ moves the highlight inside it.
         p.on(&key(Key::Down));
         assert_eq!(
             p.on(&key(Key::Tab)),
-            Some(Msg::ClockPickerSubmit("beta-two".into()))
-        );
-        // A name that matches nothing is submitted as typed, and becomes a new project.
-        let mut p = picker();
-        for c in "Zeta".chars() {
-            p.on(&key(Key::Char(c)));
-        }
-        assert_eq!(
-            p.on(&key(Key::Enter)),
-            Some(Msg::ClockPickerSubmit("Zeta".into()))
+            Some(Msg::FilePickerSubmit("timesheet.csv".into()))
         );
     }
 
     #[test]
-    fn esc_cancels_and_ctrl_c_quits() {
+    fn a_path_matching_nothing_is_taken_as_typed() {
         let mut p = picker();
-        assert_eq!(p.on(&key(Key::Esc)), Some(Msg::ClockPickerCancel));
+        for c in "/tmp/elsewhere.csv".chars() {
+            p.on(&key(Key::Char(c)));
+        }
         assert_eq!(
-            p.on(&Event::Keyboard(KeyEvent::new(
-                Key::Char('c'),
-                KeyModifiers::CONTROL
-            ))),
-            Some(Msg::Quit)
+            p.on(&key(Key::Enter)),
+            Some(Msg::FilePickerSubmit("/tmp/elsewhere.csv".into()))
         );
+    }
+
+    #[test]
+    fn esc_cancels() {
+        let mut p = picker();
+        assert_eq!(p.on(&key(Key::Esc)), Some(Msg::FilePickerCancel));
     }
 }

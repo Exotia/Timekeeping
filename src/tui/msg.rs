@@ -147,8 +147,13 @@ pub enum Msg {
     ToggleChartMode,
     /// `E` on the month screen: ask where to write the export.
     ExportPrompt,
-    /// `I` on the month screen: ask which file to import.
+    /// `I` on the month screen: ask the worker what there is to import.
     ImportPrompt,
+    /// The highlight or the filter in the import picker moved: repaint it.
+    FilePickerChanged,
+    /// The label chosen in the import picker, or a path typed into it.
+    FilePickerSubmit(String),
+    FilePickerCancel,
     // --- range marking ---
     /// `V`: drop or clear the anchor of a date range for the day-type keys.
     ToggleAnchor,
@@ -219,6 +224,8 @@ pub enum StoreCmd {
         path: std::path::PathBuf,
     },
     // --- import key ---
+    /// What the data directory holds that `import` could read.
+    ListImportable,
     ImportDryRun {
         path: std::path::PathBuf,
     },
@@ -317,6 +324,7 @@ pub enum StoreReply {
     // --- import key ---
     /// A dry run's result, asked about before anything is written.
     Confirm(Confirm),
+    Importable(Vec<ImportCandidate>),
     // --- projects screen ---
     Projects(ProjectsData),
 }
@@ -334,3 +342,11 @@ impl PartialEq for UserEvent {
 }
 
 impl Eq for UserEvent {}
+
+/// One file the import picker can offer: what to show, and what to open.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ImportCandidate {
+    pub path: std::path::PathBuf,
+    /// Name, size and date, already laid out for the list.
+    pub label: String,
+}

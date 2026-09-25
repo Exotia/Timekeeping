@@ -282,7 +282,7 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `V` | Start or clear a range: the day-type keys then apply to every weekday from the anchor to the cursor |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
 | `E` | Export to a file; asks for the path, prefilled with `<home>/export-YYYY-MM-DD.csv`. A `.json` extension writes JSON, anything else CSV (same as `tk export`) |
-| `I` | Import a file; asks for the path, then shows what the import would do and asks again before writing anything (same as `tk import`) |
+| `I` | Import a file; lists the `.csv` and `.json` files in the data directory, newest first (type to filter, or type a path to anything else), then shows what the import would do and asks again before writing anything (same as `tk import`) |
 | `?` | Help |
 | `Esc` | Close an open overlay |
 | `q`, `Ctrl+C` | Quit |
@@ -490,7 +490,8 @@ already exists; a blank name is refused too, and the name box stays open.
 | Confirm dialog | `y` or `Enter` confirms; `n`, `Esc` or `q` cancels |
 | Project picker (`i`) | Type to filter; `↑` `↓` move the highlight; `Enter` or `Tab` takes it; `Esc` cancels |
 | Break split (`b` in the day editor) | `Tab` / `Shift+Tab` and `↑` `↓` move between entries; `Enter` on the last one or `Ctrl+S` saves; `Esc` cancels |
-| Path box (`E` / `I` on the month view) | `Enter` takes the path; `Esc` cancels |
+| Path box (`E` on the month view) | `Enter` takes the path; `Esc` cancels |
+| Import picker (`I`) | Type to filter the offered files; `↑` `↓` move the highlight; `Enter` or `Tab` takes it; typing a path that matches nothing takes that path; `Esc` cancels |
 | Name box (`r` / `n` on the projects screen) | `Enter` saves; `Esc` cancels |
 | Import confirm (`I`) | Shows the dry run's counts — how many entries would land, how many rows would be skipped; `y` or `Enter` imports, `n`, `Esc` or `q` cancels |
 | Help | Any key closes it |

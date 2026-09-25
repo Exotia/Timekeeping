@@ -15,4 +15,6 @@ pub enum Id {
     // --- projects screen ---
     Projects,
     Prompt,
+    // --- import picker ---
+    FilePicker,
 }

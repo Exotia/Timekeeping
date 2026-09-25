@@ -132,6 +132,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         form: None,
         settings: None,
         clock_picker: None,
+        importable: None,
         hours,
         stats_anchor: now.date(),
         // The chart opens on the per-period bars; `r` is what asks for the

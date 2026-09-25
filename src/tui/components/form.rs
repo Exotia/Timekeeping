@@ -18,7 +18,7 @@ use tuirealm::ratatui::text::Line;
 use tuirealm::ratatui::widgets::{Clear, Paragraph};
 use tuirealm::state::State;
 
-use super::field_form::{FieldForm, FieldFormEvent, FieldSpec, filter_projects, picker_line};
+use super::field_form::{FieldForm, FieldFormEvent, FieldSpec, filter_names, picker_line};
 use crate::tui::msg::{FormData, Msg, UserEvent};
 use crate::tui::theme::Theme;
 use crate::tui::view::chrome::centered;
@@ -95,7 +95,7 @@ impl EntryForm {
 
     /// Known projects whose name contains the typed text (case-insensitive).
     fn matches(&self) -> Vec<String> {
-        filter_projects(&self.projects, &self.form.value(PROJECT))
+        filter_names(&self.projects, &self.form.value(PROJECT))
     }
 
     /// Copy the highlighted project into the field. Without a match the typed text
