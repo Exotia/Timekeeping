@@ -81,12 +81,6 @@ impl Store {
         schema_version_of(&self.conn)
     }
 
-    pub fn backup_to(&self, path: &Path) -> StoreResult<()> {
-        let p = path.to_string_lossy().to_string();
-        self.conn.execute("VACUUM INTO ?1", [p])?;
-        Ok(())
-    }
-
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -837,17 +831,6 @@ mod tests {
         assert_eq!(st.gaps, Minutes(45));
         assert_eq!(st.deduction, Minutes(36));
         assert_eq!(st.net, Minutes(459));
-    }
-
-    #[test]
-    fn backup_produces_openable_copy() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(&dir.path().join("tk.db")).unwrap();
-        s.add_project("Alpha").unwrap();
-        let bak = dir.path().join("bak.db");
-        s.backup_to(&bak).unwrap();
-        let s2 = Store::open(&bak).unwrap();
-        assert_eq!(s2.list_projects(true).unwrap().len(), 1);
     }
 
     #[test]

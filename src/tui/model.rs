@@ -1232,7 +1232,6 @@ impl Model {
                 }
             }
             // --- backup key ---
-            Msg::Backup => self.send(StoreCmd::Backup),
             // --- range marking ---
             Msg::ToggleAnchor => {
                 if self.anchor.take().is_some() {
@@ -1600,7 +1599,6 @@ impl Model {
                 ("w", "reset to work day"),
                 ("V", "start / clear a range for the day-type keys"),
                 ("u", "toggle h:mm / decimal hours"),
-                ("B", "back up the database"),
                 ("E", "export to a file"),
                 ("I", "import a file (asks first)"),
                 ("q", "quit"),
@@ -3246,13 +3244,6 @@ mod tests {
         assert!(m.help_keys().contains(&("c", "settings")));
     }
 
-    #[test]
-    fn backup_key_sends_the_backup_command() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        let (mut m, rx) = model(today);
-        m.update(Msg::Backup);
-        assert!(matches!(rx.try_recv().unwrap(), StoreCmd::Backup));
-    }
     // --- range marking ---
 
     fn work_days(from: NaiveDate, to: NaiveDate) -> Vec<Day> {

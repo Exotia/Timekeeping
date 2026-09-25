@@ -386,19 +386,13 @@ fn several_switches_inside_one_minute_each_book_their_own_minute() {
 }
 
 #[test]
-fn backup_writes_file() {
+fn backup_is_gone() {
     let dir = tempfile::tempdir().unwrap();
     tk(dir.path())
         .arg("backup")
         .assert()
-        .success()
-        .stdout(predicate::str::contains("backups/tk-"));
-    assert_eq!(
-        std::fs::read_dir(dir.path().join("backups"))
-            .unwrap()
-            .count(),
-        1
-    );
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]

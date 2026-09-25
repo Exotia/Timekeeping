@@ -39,7 +39,6 @@ impl AppComponent<Msg, UserEvent> for MonthScreen {
             Key::Char('V') => Msg::ToggleAnchor,
             Key::Char('u') => Msg::ToggleHours,
             Key::Char('?') => Msg::ToggleHelp,
-            Key::Char('B') => Msg::Backup,
             Key::Char('E') => Msg::ExportPrompt,
             Key::Char('I') => Msg::ImportPrompt,
             Key::Esc => Msg::Back,
@@ -73,13 +72,6 @@ mod tests {
         let mut c = MonthScreen::default();
         let ev = Event::Keyboard(KeyEvent::new(Key::Char('b'), KeyModifiers::NONE));
         assert_eq!(c.on(&ev), Some(Msg::TakeBreak));
-    }
-
-    #[test]
-    fn shift_b_writes_a_backup() {
-        let mut c = MonthScreen::default();
-        let ev = Event::Keyboard(KeyEvent::new(Key::Char('B'), KeyModifiers::SHIFT));
-        assert_eq!(c.on(&ev), Some(Msg::Backup));
     }
 
     #[test]

@@ -33,7 +33,6 @@ database:
 ~/.local/share/tk/
 ├── config.toml      # written on first run if absent
 ├── tk.db            # SQLite database
-└── backups/         # created by `tk backup`
 ```
 
 The directory is chosen in this order:
@@ -200,7 +199,6 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk projects unarchive NAME` | | Undo an archive. |
 | `tk projects rename OLD NEW` | | Rename a project. |
 | `tk config` | `--start DATE`<br>`--balance ±HH:MM`<br>`--target HH:MM`<br>`--vacation DAYS`<br>`--hours hm\|decimal` | Without flags, print the five core settings. With any flag, change them in `config.toml` — comments and break tiers are kept — and print the new table. A running TUI keeps the old values until it is restarted, except `hours_format`, which `u` changes live. |
-| `tk backup` | | Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db`. `B` in the TUI does the same. |
 | `tk export` | `--format csv\|json` (default `csv`)<br>`--from DATE`<br>`--to DATE`<br>`-o, --output PATH` | Export entries. Defaults to `start_date` … today, printed to stdout unless `--output` is given. |
 | `tk import FILE` | `--dry-run` | Read entries back in from a `tk export` (CSV or JSON) or from the CSV the Python tool this project replaced used to write. The format is detected from the file; there is no flag for it. `--dry-run` prints the same report and writes nothing. |
 
@@ -283,7 +281,6 @@ screen's hint row has no room for it at 80 columns; `?` lists it there.
 | `w` | Reset the day to a work day |
 | `V` | Start or clear a range: the day-type keys then apply to every weekday from the anchor to the cursor |
 | `u` | Toggle every duration between `h:mm` and decimal hours |
-| `B` | Write a backup of the database to `<home>/backups/` (same as `tk backup`) |
 | `E` | Export to a file; asks for the path, prefilled with `<home>/export-YYYY-MM-DD.csv`. A `.json` extension writes JSON, anything else CSV (same as `tk export`) |
 | `I` | Import a file; asks for the path, then shows what the import would do and asks again before writing anything (same as `tk import`) |
 | `?` | Help |
@@ -500,7 +497,7 @@ already exists; a blank name is refused too, and the name box stays open.
 
 ## Moving your data around
 
-The data directory is self-contained: `config.toml`, `tk.db` and `backups/`.
+The data directory is self-contained: `config.toml` and `tk.db`.
 Copy the folder to another machine and point `tk` at it, and nothing else is
 needed.
 
@@ -512,7 +509,6 @@ tk --home /run/media/usb/tk
 ```
 
 ```bash
-tk backup                      # snapshot into <home>/backups/
 tk export --format csv -o hours.csv
 tk export --format json --from 2026-01-01 --to 2026-12-31 -o 2026.json
 ```

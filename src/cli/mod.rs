@@ -100,8 +100,6 @@ pub enum Command {
         #[arg(long, value_name = "hm|decimal")]
         hours: Option<String>,
     },
-    /// Copy the database into backups/
-    Backup,
     /// Export entries as CSV or JSON
     Export {
         #[arg(long, default_value = "csv")]
