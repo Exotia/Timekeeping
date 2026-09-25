@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use crate::core::CoreError;
 
+pub use entries::ImportReport;
 pub use session::{Session, SessionState};
 
 #[derive(Debug, Error)]
@@ -873,5 +874,101 @@ mod tests {
         // Once A releases the lock, B's write path succeeds normally.
         b.add_entry(day, t(8, 0), t(9, 0), "Alpha", "").unwrap();
         assert_eq!(b.entries_on(day).unwrap().len(), 1);
+    }
+
+    fn import_row(
+        line: usize,
+        date: NaiveDate,
+        start: (u32, u32),
+        end: (u32, u32),
+        project: &str,
+    ) -> crate::core::import::ImportRow {
+        crate::core::import::ImportRow {
+            date,
+            start: NaiveTime::from_hms_opt(start.0, start.1, 0).unwrap(),
+            end: NaiveTime::from_hms_opt(end.0, end.1, 0).unwrap(),
+            project: project.to_string(),
+            comment: String::new(),
+            line,
+        }
+    }
+
+    #[test]
+    fn imports_rows_and_creates_their_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("tk.db")).unwrap();
+        let rows = vec![
+            import_row(1, d(2026, 9, 14), (9, 0), (15, 30), "Alpha"),
+            import_row(2, d(2026, 9, 15), (9, 0), (17, 0), "Beta"),
+        ];
+        let r = s.import_entries(&rows, false).unwrap();
+        assert_eq!(r.imported, 2);
+        assert!(r.skipped.is_empty());
+        assert_eq!(
+            r.new_projects,
+            vec!["Alpha".to_string(), "Beta".to_string()]
+        );
+        assert_eq!(
+            s.entries_in(d(2026, 9, 14), d(2026, 9, 15)).unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn an_overlapping_row_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("tk.db")).unwrap();
+        let rows = vec![import_row(1, d(2026, 9, 14), (9, 0), (15, 30), "Alpha")];
+        s.import_entries(&rows, false).unwrap();
+
+        // Same file again: the row collides with what the first run wrote.
+        let r = s.import_entries(&rows, false).unwrap();
+        assert_eq!(r.imported, 0);
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!(r.skipped[0].0, 1);
+        // CoreError::Overlap's message, carried through as the skip reason.
+        assert!(r.skipped[0].1.contains("overlaps"), "{:?}", r.skipped);
+        assert_eq!(
+            s.entries_in(d(2026, 9, 14), d(2026, 9, 14)).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn dry_run_reports_but_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("tk.db")).unwrap();
+        let rows = vec![import_row(1, d(2026, 9, 14), (9, 0), (15, 30), "Alpha")];
+        let r = s.import_entries(&rows, true).unwrap();
+        assert_eq!(r.imported, 1);
+        assert!(
+            s.entries_in(d(2026, 9, 14), d(2026, 9, 14))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(s.project_by_name("Alpha").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_row_on_a_non_work_day_is_skipped_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("tk.db")).unwrap();
+        s.set_day_kind(d(2026, 9, 14), &DayKind::Vacation).unwrap();
+        let rows = vec![import_row(1, d(2026, 9, 14), (9, 0), (15, 30), "Alpha")];
+        let r = s.import_entries(&rows, false).unwrap();
+        assert_eq!(r.imported, 0);
+        assert!(r.skipped[0].1.contains("vacation"), "{:?}", r.skipped);
+    }
+
+    // Review Focus 3: export writes 22:00,02:00 for a shift over midnight.
+    #[test]
+    fn an_entry_crossing_midnight_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("tk.db")).unwrap();
+        let rows = vec![import_row(1, d(2026, 9, 14), (22, 0), (2, 0), "Alpha")];
+        let r = s.import_entries(&rows, false).unwrap();
+        assert_eq!(r.imported, 1, "{:?}", r.skipped);
+        let e = &s.entries_in(d(2026, 9, 14), d(2026, 9, 14)).unwrap()[0];
+        assert!(e.crosses_midnight());
     }
 }

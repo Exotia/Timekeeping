@@ -2,7 +2,8 @@ use chrono::{NaiveDate, NaiveTime};
 use rusqlite::params;
 
 use super::{Store, StoreError, StoreResult, date_str, parse_date, time_from_min};
-use crate::core::{DayKind, Entry, Minutes, check_overlap, check_range, minutes_of};
+use crate::core::import::ImportRow;
+use crate::core::{CoreError, DayKind, Entry, Minutes, check_overlap, check_range, minutes_of};
 
 const SELECT: &str = "SELECT e.id, e.date, e.start_min, e.end_min, p.name, e.comment, e.break_share
                       FROM entries e JOIN projects p ON p.id = e.project_id";
@@ -146,5 +147,64 @@ impl Store {
             return Err(StoreError::NotFound(format!("entry {id}")));
         }
         Ok(())
+    }
+}
+
+/// What an import did, for the message the CLI prints and the TUI shows.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    pub imported: usize,
+    /// (source line, why), one per row that could not be written.
+    pub skipped: Vec<(usize, String)>,
+    pub new_projects: Vec<String>,
+}
+
+impl Store {
+    /// Apply `rows` in a single transaction.
+    ///
+    /// A row that breaks a rule the store already enforces — an overlap, a day
+    /// that is not a work day — is skipped and counted rather than aborting the
+    /// file, so re-running an import lands only what is genuinely new. Anything
+    /// else is a real failure and rolls the whole import back.
+    ///
+    /// `dry_run` does every check and then rolls back, which is how the caller
+    /// can show what *would* happen without a second code path that might
+    /// disagree with the real one.
+    pub fn import_entries(&self, rows: &[ImportRow], dry_run: bool) -> StoreResult<ImportReport> {
+        self.conn().execute_batch("BEGIN IMMEDIATE")?;
+        let result = self.import_locked(rows);
+        if result.is_ok() && !dry_run {
+            self.conn().execute_batch("COMMIT")?;
+        } else {
+            let _ = self.conn().execute_batch("ROLLBACK");
+        }
+        result
+    }
+
+    fn import_locked(&self, rows: &[ImportRow]) -> StoreResult<ImportReport> {
+        let mut report = ImportReport::default();
+        for r in rows {
+            // Asked before the write, because the write is what creates it.
+            let is_new = self.project_by_name(r.project.trim())?.is_none()
+                && !report.new_projects.iter().any(|p| p == r.project.trim());
+            match self.add_entry_locked(r.date, r.start, r.end, &r.project, &r.comment) {
+                Ok(_) => {
+                    report.imported += 1;
+                    if is_new {
+                        report.new_projects.push(r.project.trim().to_string());
+                    }
+                }
+                // Exactly the three a bad row can legitimately trip:
+                // `ensure_work_day` raises Constraint, `check_overlap` raises
+                // CoreError::Overlap and `check_range` CoreError::InvalidRange.
+                // Anything else is the database in trouble, not this row.
+                Err(StoreError::Constraint(why)) => report.skipped.push((r.line, why)),
+                Err(StoreError::Core(e @ (CoreError::Overlap | CoreError::InvalidRange))) => {
+                    report.skipped.push((r.line, e.to_string()))
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(report)
     }
 }
