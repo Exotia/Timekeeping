@@ -1,15 +1,17 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, anyhow, bail};
 use chrono::{Days, Local, NaiveDate, NaiveDateTime, Timelike};
 
 use super::{Command, Ctx, ProjectAction};
 use crate::config::{Config, ConfigPatch};
+use crate::core::import::parse_import;
 use crate::core::{
     BreakTier, DayKind, Entry, HoursFormat, Minutes, TodayCtx, day_stats, entry_nets, parse_date,
     parse_time_range, provisional_net_for, running_balance, running_minutes,
 };
+use crate::store::ImportReport;
 
 pub fn now_local() -> NaiveDateTime {
     Local::now().naive_local()
@@ -495,8 +497,40 @@ pub fn run(cmd: Command, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<()> {
                 None => out.write_all(text.as_bytes())?,
             }
         }
+        Command::Import { file, dry_run } => {
+            let (report, msg) = import_file(ctx, &file, dry_run)?;
+            writeln!(out, "{msg}")?;
+            // The lines say which rows need a look; the count alone does not.
+            for (line, why) in &report.skipped {
+                writeln!(out, "  line {line}: {why}")?;
+            }
+        }
     }
     Ok(())
+}
+
+/// Read `path`, apply it, and return the report with the one-line summary that
+/// both the CLI and the TUI show.
+pub fn import_file(
+    ctx: &Ctx,
+    path: &Path,
+    dry_run: bool,
+) -> anyhow::Result<(ImportReport, String)> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let rows = parse_import(&text)?;
+    let report = ctx.store.import_entries(&rows, dry_run)?;
+    let mut msg = format!("imported {}", report.imported);
+    if !report.skipped.is_empty() {
+        msg.push_str(&format!(", skipped {}", report.skipped.len()));
+    }
+    if !report.new_projects.is_empty() {
+        msg.push_str(&format!(", {} new projects", report.new_projects.len()));
+    }
+    if dry_run {
+        msg.push_str(" (dry run, nothing written)");
+    }
+    Ok((report, msg))
 }
 
 /// The five settings `tk config` shows, one per line, label padded to 16.

@@ -202,6 +202,7 @@ Run `tk` with no subcommand to open the TUI. Everything else is scriptable.
 | `tk config` | `--start DATE`<br>`--balance ±HH:MM`<br>`--target HH:MM`<br>`--vacation DAYS`<br>`--hours hm\|decimal` | Without flags, print the five core settings. With any flag, change them in `config.toml` — comments and break tiers are kept — and print the new table. A running TUI keeps the old values until it is restarted, except `hours_format`, which `u` changes live. |
 | `tk backup` | | Copy the database to `<home>/backups/tk-YYYYmmdd-HHMMSS.db`. `B` in the TUI does the same. |
 | `tk export` | `--format csv\|json` (default `csv`)<br>`--from DATE`<br>`--to DATE`<br>`-o, --output PATH` | Export entries. Defaults to `start_date` … today, printed to stdout unless `--output` is given. |
+| `tk import FILE` | `--dry-run` | Read entries back in from a `tk export` (CSV or JSON) or from the CSV the Python tool this project replaced used to write. The format is detected from the file; there is no flag for it. `--dry-run` prints the same report and writes nothing. |
 
 Global flags, accepted with any subcommand: `--home DIR`, `--help`, `--version`.
 `tk help <subcommand>` prints the help for one subcommand, the same as
@@ -215,6 +216,14 @@ Global flags, accepted with any subcommand: `--home DIR`, `--help`, `--version`.
 `8:00`, or `8.00`. An `END` earlier than `START` means the entry crosses
 midnight; `END` equal to `START` is rejected.
 
+**Importing.** The `gross`, `net` and `break` columns of a file are ignored and
+recomputed from your break tiers, so an import can never contradict your
+configuration. Projects that do not exist yet are created. Rows that overlap an
+entry you already have, or that land on a day marked vacation, flex, sick or
+holiday, are skipped and listed by line number — so running the same import
+twice is safe, and the second run changes nothing. Day types are not part of any
+of these formats and are not restored.
+
 ```bash
 tk in -p Alpha
 tk break -m "morning"          # books the morning, keeps the clock on Alpha
@@ -225,6 +234,8 @@ tk add yesterday 9-1730 -p Alpha
 tk day 2026-12-27 vacation --to 2026-12-31
 tk day 2026-10-02 absence --label "Betriebsausflug"
 tk export --format json --from 2026-01-01 -o hours.json
+tk import hours.json --dry-run   # see what it would do first
+tk import hours.json
 ```
 
 ## Terminal UI

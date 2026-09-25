@@ -558,3 +558,108 @@ fn config_accepts_negative_values() {
         )))
         .stdout(predicate::str::contains("initial_balance  -02:30"));
 }
+
+#[test]
+fn export_then_import_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let csv = dir.path().join("out.csv");
+    tk(home)
+        .args([
+            "add",
+            "2026-09-14",
+            "0900-1530",
+            "-p",
+            "Alpha",
+            "-m",
+            "lunch, then review",
+        ])
+        .assert()
+        .success();
+    tk(home)
+        .args(["export", "-o", csv.to_str().unwrap()])
+        .assert()
+        .success();
+
+    // A fresh home: the same rows must land from the file alone.
+    let home2 = dir.path().join("h2");
+    tk(&home2)
+        .args(["import", csv.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported 1"));
+    tk(&home2)
+        .args(["export"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lunch, then review"));
+}
+
+#[test]
+fn importing_the_same_file_twice_skips_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let csv = dir.path().join("out.csv");
+    std::fs::write(
+        &csv,
+        "date,start,end,project,comment,gross,net,break\n\
+         2026-09-14,09:00,15:30,Alpha,note,06:30,05:42,00:48\n",
+    )
+    .unwrap();
+    tk(home)
+        .args(["import", csv.to_str().unwrap()])
+        .assert()
+        .success();
+    tk(home)
+        .args(["import", csv.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skipped 1"));
+}
+
+#[test]
+fn dry_run_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let csv = dir.path().join("out.csv");
+    std::fs::write(
+        &csv,
+        "date,start,end,project,comment,gross,net,break\n\
+         2026-09-14,09:00,15:30,Alpha,note,06:30,05:42,00:48\n",
+    )
+    .unwrap();
+    tk(home)
+        .args(["import", csv.to_str().unwrap(), "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported 1"));
+    tk(home)
+        .args(["export"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha").not());
+}
+
+// Review Focus 4: nothing to do is not a failure.
+#[test]
+fn an_empty_file_imports_nothing_without_erroring() {
+    let dir = tempfile::tempdir().unwrap();
+    let csv = dir.path().join("empty.csv");
+    std::fs::write(&csv, "").unwrap();
+    tk(dir.path())
+        .args(["import", csv.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported 0"));
+}
+
+// Review Focus 5, CLI half.
+#[test]
+fn a_missing_file_fails_with_its_path() {
+    let dir = tempfile::tempdir().unwrap();
+    tk(dir.path())
+        .args(["import", "/nope/missing.csv"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing.csv"));
+}

@@ -113,6 +113,14 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Import entries from a tk export (CSV or JSON) or the old tool's CSV
+    Import {
+        /// File to read
+        file: PathBuf,
+        /// Report what would happen and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
